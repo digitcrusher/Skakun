@@ -1,5 +1,5 @@
 const std = @import("std");
-const Buffer = @import("buffer.zig").Buffer;
+const Editor = @import("buffer.zig").Editor;
 
 const glyphs = [256]?[]const u8{
   "␀", "␁", "␂", "␃", "␄", "␅", "␆", "␇", "␈", "␉", "␊", "␋", "␌", "␍", "␎", "␏",
@@ -34,9 +34,21 @@ pub fn main() !void {
 
   var gpa = std.heap.GeneralPurposeAllocator(.{}){};
   defer _ = gpa.deinit();
-  var buffer = Buffer.init(gpa.allocator());
-  defer buffer.deinit();
-  try buffer.set_path("https://lacina.io/static/1479909FF9E0FED0752C9E0906D4482EC50E0E41.asc");
-  //try buffer.set_path("admin:/root/.profile");
-  try buffer.load();
+
+  {
+    var editor = Editor.init(gpa.allocator());
+    var buffer = try editor.load("https://lacina.io/lacian/after-setup.md");
+    defer buffer.destroy();
+
+    var data: [2048]u8 = undefined;
+
+    try buffer.insert(28, "- Wyłącz komputer i pójdź do psychologa.\n");
+    try buffer.read(0, data[0 .. buffer.root.?.width]);
+    std.debug.print("{s}", .{data[0 .. buffer.root.?.width]});
+    try buffer.delete(73, 1274);
+    try buffer.read(0, data[0 .. buffer.root.?.width]);
+    std.debug.print("{s}", .{data[0 .. buffer.root.?.width]});
+  }
+
+  _ = gpa.detectLeaks();
 }
