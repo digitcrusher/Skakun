@@ -7,31 +7,17 @@
 
 
 We need:
-- 24-bit colors
-- fancy fonts effects (underlines etc.)
 - mouse clicks, drags, scrolls
-- mouse pointer sprite change
-- whole screen buffering for flashes
-- restore terminal view from before
 - ctrl, alt, shift modifiers
 - wide character support
-- support for old terminals and windows
 - non-blocking character input
 - multi-codepoint emojis
 
 
-we don't want to do termios, escape sequences, terminfo
-
-CIEDE2000 for color approximation
-
-- Alacritty
+The following terminals have first-class support:
 - GNOME Terminal
-- Kitty
+- kitty
 - Konsole
-- ssh
 - st
-- tmux
-- urxvt
 - Windows Terminal
 - Xfce Terminal
-- xterm

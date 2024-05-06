@@ -12,6 +12,11 @@ pub fn build(b: *std.Build) void {
   exe.linkSystemLibrary("gio-2.0");
   exe.linkSystemLibrary("lua-5.1");
 
+
+//"http://luarocks.org/manifests/peterbillam/terminfo-1.8-0.src.rock"
+//"terminfo-1.8.tar.gz"
+// TODO: beat zig's build system into submission
+
   const run_cmd = b.addRunArtifact(exe);
   run_cmd.step.dependOn(b.getInstallStep());
   if(b.args) |args| {
