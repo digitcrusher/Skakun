@@ -1,11 +1,5 @@
 const std = @import("std");
-const c = @cImport({
-  @cInclude("fcntl.h");
-  @cInclude("gio/gio.h");
-  @cInclude("stdio.h");
-  @cInclude("sys/mman.h");
-  @cInclude("sys/stat.h");
-});
+const gio = @cImport(@cInclude("gio/gio.h"));
 
 const MemoryOwner = enum {
   Allocator, Glib, Mmap
@@ -38,12 +32,10 @@ const Fragment = struct {
         editor.allocator.free(self.data);
       },
       .Glib => {
-        c.g_free(@ptrCast(self.data));
+        gio.g_free(@ptrCast(self.data));
       },
       .Mmap => {
-        if(c.munmap(@ptrCast(self.data), self.data.len) == 0) {
-          c.perror("Failed to munmap fragment");
-        }
+        std.posix.munmap(@alignCast(self.data));
       },
     }
     editor.allocator.destroy(self);
@@ -124,9 +116,7 @@ const Node = struct {
   }
 
   fn set_left(self: *Node, editor: *Editor, value: ?*Node) void {
-    if(self.is_frozen) {
-      @panic("set_left on frozen node");
-    }
+    std.debug.assert(!self.is_frozen);
     if(self.left == value) return;
     if(self.left) |x| {
       x.unref(editor);
@@ -135,9 +125,7 @@ const Node = struct {
   }
 
   fn set_right(self: *Node, editor: *Editor, value: ?*Node) void {
-    if(self.is_frozen) {
-      @panic("set_right on frozen node");
-    }
+    std.debug.assert(!self.is_frozen);
     if(self.right == value) return;
     if(self.right) |x| {
       x.unref(editor);
@@ -361,10 +349,10 @@ pub const Buffer = struct {
     self.root = null;
     defer old_root.unref(self.editor);
 
-    const ab, const C = try old_root.split_ref(self.editor, end);
+    const ab, const c = try old_root.split_ref(self.editor, end);
     defer {
       ab.?.unref(self.editor);
-      if(C) |x| {
+      if(c) |x| {
         x.unref(self.editor);
       }
     }
@@ -375,7 +363,7 @@ pub const Buffer = struct {
       }
       b.?.unref(self.editor);
     }
-    if(try Node.merge(self.editor, a, C)) |x| {
+    if(try Node.merge(self.editor, a, c)) |x| {
       self.root = x.ref();
     }
   }
@@ -386,6 +374,7 @@ pub const Buffer = struct {
   //   } else if(!src.is_frozen) {
   //     return error.BufferNotFrozen;
   //   }
+  //   std.debug.assert(self.editor == src.buffer.editor);
   //   // TODO
   // }
 };
@@ -403,19 +392,20 @@ pub const Editor = struct {
     };
   }
 
-  pub fn load(self: *Editor, path: [*:0]const u8) !*Buffer {
+  pub fn open(self: *Editor, path: [*:0]const u8) !*Buffer {
     var owner: MemoryOwner = undefined;
     var data: []u8 = undefined;
 
-    if(c.g_uri_is_valid(path, c.G_URI_FLAGS_NONE, null) != 0) {
-      const file = c.g_file_new_for_uri(path); // TODO: Mount admin:// locations
-      defer c.g_object_unref(file);
+    if(gio.g_uri_is_valid(path, gio.G_URI_FLAGS_NONE, null) != 0) {
+      const file = gio.g_file_new_for_uri(path); // TODO: Mount admin:// locations
+      defer gio.g_object_unref(file);
 
       owner = .Glib;
-      var maybe_err: ?*c.GError = null;
-      if(c.g_file_load_contents(file, null, @ptrCast(&data.ptr), &data.len, null, &maybe_err) == 0) {
+      var maybe_err: ?*gio.GError = null;
+      if(gio.g_file_load_contents(file, null, @ptrCast(&data.ptr), &data.len, null, &maybe_err) == 0) {
         if(maybe_err) |err| {
           std.debug.print("Failed to load GIO file: {s}\n", .{err.message});
+          gio.g_free(err);
         } else {
           std.debug.print("Failed to load GIO file\n", .{});
         }
@@ -423,33 +413,17 @@ pub const Editor = struct {
       }
 
     } else {
-      const fd = c.open(path, c.O_RDONLY);
-      if(fd == -1) {
-        c.perror("Failed to open file");
-        return error.OpenError;
-      }
-      defer if(c.close(fd) != 0) {
-        c.perror("Failed to close file");
-      };
-
-      var stat: c.struct_stat = undefined;
-      if(c.fstat(fd, &stat) != 0) {
-        c.perror("Failed to stat file");
-        return error.StatError;
-      }
-      const size: usize = @intCast(stat.st_size);
+      const fd = try std.posix.openZ(path, .{ .ACCMODE = .RDONLY }, 0);
+      defer std.posix.close(fd);
+      const size: usize = @intCast((try std.posix.fstat(fd)).size);
 
       if(size <= self.max_load_size) {
         owner = .Allocator;
         data = try self.allocator.alloc(u8, size);
-        if(c.read(fd, @ptrCast(data), data.len) < 0) {
-          c.perror("Failed to read file");
-          return error.ReadError;
-        }
-
+        data.len = try std.posix.read(fd, data);
       } else {
         owner = .Mmap;
-        data = @as([*]u8, @ptrCast(c.mmap(null, size, c.PROT_READ, c.MAP_PRIVATE, fd, 0)))[0 .. size];
+        data = try std.posix.mmap(null, size, std.posix.PROT.READ, .{ .TYPE = .PRIVATE }, fd, 0);
       }
     }
 

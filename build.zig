@@ -10,6 +10,7 @@ pub fn build(b: *std.Build) void {
   b.installArtifact(exe);
   exe.linkLibC();
   exe.linkSystemLibrary("gio-2.0");
+  exe.linkSystemLibrary("lua-5.1");
 
   const run_cmd = b.addRunArtifact(exe);
   run_cmd.step.dependOn(b.getInstallStep());
