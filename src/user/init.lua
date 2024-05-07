@@ -1,4 +1,4 @@
-local tty = require('terminal')
+local tty = require('core.tty')
 
 tty.setup()
 

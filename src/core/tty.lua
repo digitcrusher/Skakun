@@ -1,5 +1,10 @@
 --[[
 
+We chose not to use any existing library, such as ncurses, because none of them
+supports all the features of every terminal in existence and implementing
+a custom, open solution in Lua gives the user more freedom in that and other
+areas.
+
 set_foreground(red, green, blue)
 set_foreground(name)
   Sets the text foreground color. Red, green and blue must be in the range of
@@ -117,24 +122,30 @@ function tty.setup()
   tty.detect_caps()
   tty.load_functions()
   -- TODO: register atexit for tty.restore
-  tty.write('\27[?1049h') -- Switches to the alternate terminal screen
+  tty.write('\27[?1049h') -- Switch to the alternate terminal screen
+  tty.write('\27]22;>default\27\\', '\27]22;\27\\') -- Push the terminal default onto the pointer shape stack
 end
 
-local terminfo = require('terminfo')
 function tty.detect_caps()
   -- The terminfo database has a reputation of not being the most reliable nor
-  -- up-to-date and sadly there's no better standard way to query the terminal's
-  -- capabilities.
+  -- up-to-date and sadly there's no better, standard way to query the
+  -- terminal's capabilities.
+  local terminfo = require('terminfo')
+  print(terminfo.getflag('Su')) -- This terminfo library uses boolnames, which includes only the standard caps, instead of calling tigetstr, which does recognize extended caps such as Tc (true-color) and Su (kitty underlines).
+  for k, v in pairs(terminfo.flag_capnames()) do
+    print(k, v)
+  end
 end
 
 function tty.restore()
-  tty.reset()
-  tty.write('\27[?1049l') -- Switches back to the primary terminal screen
+  tty.reset() -- TODO: save the text attributes from before
+  tty.write('\27[?1049l') -- Switch back to the primary terminal screen
+  tty.write('\27]22;<\27\\') -- Pop our pointer shape from the stack
 end
 
--- Moves the cursor to the given position on the screen.
+-- Moves the cursor to the given position on the screen indexed from 1.
 function tty.goto(x, y)
-  tty.write('\27[', y + 1, ';', x + 1, 'H')
+  tty.write('\27[', y, ';', x, 'H')
 end
 
 -- Clears the screen.
@@ -230,6 +241,7 @@ function tty.load_functions()
 
   if tty.cap.bold then
     function tty.set_bold(is_enabled)
+      tty.state.bold = is_enabled
       if is_enabled then
         tty.write('\27[1m')
       else
@@ -246,6 +258,7 @@ function tty.load_functions()
     -- Italics and boldness are mutually exclusive on xterm (as of version 379)
     -- with italics taking precedence.
     function tty.set_italic(is_enabled)
+      tty.state.italic = is_enabled
       if is_enabled then
         tty.write('\27[3m')
       else
@@ -350,13 +363,18 @@ function tty.load_functions()
       -- The CSS names have hyphens, not underscores.
       tty.write('\27]22;', (name or ''):gsub('_', '-'), '\27\\')
       -- They don't work on xterm by the way, which has its own set of pointer
-      -- shape names:
-      -- https://invisible-island.net/xterm/manpage/xterm.html#VT100-Widget-Resources:pointerShape
+      -- shape names: https://invisible-island.net/xterm/manpage/xterm.html#VT100-Widget-Resources:pointerShape
     end
   else
     -- The escape sequence is designed not to have unintended side-effects in
     -- terminals that don't support it, so this stub improves performance only.
     function tty.set_mouse_shape() end
+  end
+
+  function tty.set_window_title(value)
+  end
+
+  function tty.set_window_background(red, green, blue)
   end
 end
 

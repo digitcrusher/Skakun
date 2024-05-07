@@ -21,3 +21,5 @@ The following terminals have first-class support:
 - st
 - Windows Terminal
 - Xfce Terminal
+
+2. Install GIO, Lua 5.1 and ncurses (`apt install libglib2.0-dev liblua5.1-dev libncurses-dev` on Debian)
