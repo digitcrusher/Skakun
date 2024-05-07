@@ -18,6 +18,7 @@ The following terminals have first-class support:
 - GNOME Terminal
 - kitty
 - Konsole
+- Linux VT
 - st
 - Windows Terminal
 - Xfce Terminal

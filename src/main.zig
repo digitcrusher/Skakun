@@ -60,7 +60,10 @@ pub fn main() !void {
 
   const vm = lua.luaL_newstate() orelse return error.SomeKindOfMemoryError;
   defer lua.lua_close(vm);
+
   lua.luaL_openlibs(vm);
+  @import("core/terminfo.zig").register(vm);
+  @import("core/termios.zig").register(vm);
 
   const exe_dir = try std.fs.selfExeDirPathAlloc(allocator);
   defer allocator.free(exe_dir);

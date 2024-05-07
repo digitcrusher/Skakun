@@ -113,34 +113,99 @@ local tty = {
   },
 
   state = {},
-
-  write = io.write,
 }
 
-
-function tty.setup()
-  tty.detect_caps()
-  tty.load_functions()
-  -- TODO: register atexit for tty.restore
-  tty.write('\27[?1049h') -- Switch to the alternate terminal screen
-  tty.write('\27]22;>default\27\\', '\27]22;\27\\') -- Push the terminal default onto the pointer shape stack
+tty.write = io.write
+tty.flush = io.flush
+function tty.read(count)
+  return io.read(count or '*a') or ''
 end
 
-function tty.detect_caps()
-  -- The terminfo database has a reputation of not being the most reliable nor
-  -- up-to-date and sadly there's no better, standard way to query the
-  -- terminal's capabilities.
-  local terminfo = require('terminfo')
-  print(terminfo.getflag('Su')) -- This terminfo library uses boolnames, which includes only the standard caps, instead of calling tigetstr, which does recognize extended caps such as Tc (true-color) and Su (kitty underlines).
-  for k, v in pairs(terminfo.flag_capnames()) do
-    print(k, v)
-  end
+local termios = require('core.termios')
+
+function tty.setup()
+  termios.enable_raw_mode()
+  io.stdout:setvbuf('full') -- Cranks up boring line buffering to rad full buffering
+
+  tty.detect_caps()
+  tty.load_functions()
+  tty.write('\27[?1049h') -- Switch to the alternate terminal screen
+  tty.write('\27]22;>default\27\\', '\27]22;\27\\') -- Push the terminal default onto the pointer shape stack
 end
 
 function tty.restore()
   tty.reset() -- TODO: save the text attributes from before
   tty.write('\27[?1049l') -- Switch back to the primary terminal screen
   tty.write('\27]22;<\27\\') -- Pop our pointer shape from the stack
+
+  io.stdout:setvbuf('line') -- And back to lame line buffering again…
+  termios.disable_raw_mode()
+end
+
+function tty.detect_caps()
+  -- The terminfo database has a reputation of not being the most reliable nor
+  -- up-to-date and sadly there's no better, standard way to query the
+  -- terminal's capabilities.
+  local ti = require('core.terminfo')
+
+  -- It would probably be better to follow https://github.com/termstandard/colors#querying-the-terminal
+  if ti.getflag('Tc') or ti.getstr('initc') then
+    tty.cap.foreground = 'true_color'
+    tty.cap.background = 'true_color'
+  elseif ti.getnum('colors') >= 8 then
+    tty.cap.foreground = 'ansi'
+    tty.cap.background = 'ansi'
+  else
+    tty.cap.foreground = false
+    tty.cap.background = false
+  end
+
+  if ti.getstr('bold') and os.getenv('TERM') ~= 'linux' then
+    tty.cap.bold = true
+  else
+    tty.cap.bold = false
+  end
+
+  if ti.getstr('sitm') and ti.getstr('ritm') then
+    tty.cap.italic = true
+  else
+    tty.cap.italic = false
+  end
+
+  if ti.getstr('smul') and ti.getstr('rmul') then
+    tty.cap.underline = true
+  else
+    tty.cap.underline = false
+  end
+
+  if ti.getflag('Su') then
+    tty.cap.underline_color = 'true_color'
+    tty.cap.underline_shape = true
+  else
+    tty.cap.underline_color = false
+    tty.cap.underline_shape = false
+  end
+
+  if ti.getstr('smxx') and ti.getstr('rmxx') then
+    tty.cap.strikethrough = true
+  else
+    tty.cap.strikethrough = false
+  end
+
+  -- There is currently no universal way to detect hyperlink support but they
+  -- don't cause unintended side-effects anyways. Further reading: https://github.com/kovidgoyal/kitty/issues/68
+  tty.cap.hyperlink = true
+
+  tty.read()
+  tty.write('\27]22;?__current__\27\\')
+  tty.flush()
+  -- Kitty sends out a colon, even though its own docs say there should be
+  -- a semicolon there???
+  if tty.read():match('^\27]22:.*\27\\$') then
+    tty.cap.mouse_shape = true
+  else
+    tty.cap.mouse_shape = false
+  end
 end
 
 -- Moves the cursor to the given position on the screen indexed from 1.
@@ -156,7 +221,6 @@ end
 -- Resets all text and terminal attributes to default.
 function tty.reset()
   tty.write('\27[0m')
-  tty.set_mouse_shape()
   tty.state = {}
 end
 
@@ -315,9 +379,13 @@ function tty.load_functions()
   end
 
   -- Name must be one of underline_shapes or nil for the terminal default.
-  function tty.set_underline_shape(name)
-    tty.state.underline_shape = name
-    tty.set_underline(tty.state.underline)
+  if tty.cap.underline_shape then
+    function tty.set_underline_shape(name)
+      tty.state.underline_shape = name
+      tty.set_underline(tty.state.underline)
+    end
+  else
+    function tty.set_underline_shape() end
   end
 
   if tty.cap.strikethrough then
@@ -334,12 +402,7 @@ function tty.load_functions()
   end
 
   if tty.cap.hyperlink then
-    -- There is currently no universal escape sequence nor
-    -- terminfo entry to query whether the terminal supports this, but using this
-    -- out in terminals without support doesn't have unintended side-effects.
-    -- Further reading:
-    -- https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda
-    -- https://github.com/kovidgoyal/kitty/issues/68
+    -- Further reading: https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda
     function tty.set_hyperlink(url)
       if url then
         -- ESCs and all other ASCII control characters are disallowed in valid URLs
@@ -352,8 +415,8 @@ function tty.load_functions()
       end
     end
   else
-    -- The escape sequence is designed not to have unintended side-effects in
-    -- terminals that don't support it, so this stub improves performance only.
+    -- The escape sequence, by design, has no effect in terminals that don't
+    -- support it, so this stub improves performance only.
     function tty.set_hyperlink() end
   end
 
@@ -366,8 +429,8 @@ function tty.load_functions()
       -- shape names: https://invisible-island.net/xterm/manpage/xterm.html#VT100-Widget-Resources:pointerShape
     end
   else
-    -- The escape sequence is designed not to have unintended side-effects in
-    -- terminals that don't support it, so this stub improves performance only.
+    -- The escape sequence, by design, has no effect in terminals that don't
+    -- support it, so this stub improves performance only.
     function tty.set_mouse_shape() end
   end
 
