@@ -27,7 +27,7 @@ local function hue_color(hue)
          math.floor(255 * math.min(2 - math.abs(4 * hue - 2), 1)),
          math.floor(255 * math.min(math.max(4 * hue - 2, 0), 1))
 end
-local width = require('core.terminfo').getnum('cols')
+local width = tty.getnum('cols')
 for i = 1, width do
   local progress = (i - 1) / (width - 1)
   tty.set_foreground(hue_color(progress))

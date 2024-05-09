@@ -62,8 +62,7 @@ pub fn main() !void {
   defer lua.lua_close(vm);
 
   lua.luaL_openlibs(vm);
-  @import("core/terminfo.zig").register(vm);
-  @import("core/termios.zig").register(vm);
+  try @import("core/tty/system.zig").register(vm);
 
   const exe_dir = try std.fs.selfExeDirPathAlloc(allocator);
   defer allocator.free(exe_dir);

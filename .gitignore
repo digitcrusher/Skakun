@@ -1,5 +1,3 @@
-external/terminfo-1.8-0.src.rock
-external/terminfo-1.8/
 test
 zig-cache/
 zig-out/

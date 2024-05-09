@@ -1,35 +1,4 @@
---[[
-
-We chose not to use any existing library, such as ncurses, because none of them
-supports all the features of every terminal in existence and implementing
-a custom, open solution in Lua gives the user more freedom in that and other
-areas.
-
-set_foreground(red, green, blue)
-set_foreground(name)
-  Sets the text foreground color. Red, green and blue must be in the range of
-  0-255. Name must be one of ansi_colors or nil for the terminal default.
-
-set_background(red, green, blue)
-set_background(name)
-  Sets the text background color. Red, green and blue must be in the range of
-  0-255. Name must be one of ansi_colors or nil for the terminal default.
-
-
-set_underline_color(red, green, blue)
-set_underline_color(name)
-  Sets the text underline color. Red, green and blue must be in the range of
-  0-255. Name must be one of ansi_colors or nil for the terminal default.
-
-set_hyperlink(url)
-  Sets the URL that the text links to or, if url is nil, falls back to default
-  terminal behavior of auto-detecting URLs.
-
-set_mouse_shape(name)
-  Sets the pointer shape for all areas of the terminal screen. Name must be one
-  of mouse_shapes or nil for the terminal default.
-
-]]--
+local utils = require('core.utils')
 
 local tty = {
   ansi_colors = {
@@ -52,17 +21,17 @@ local tty = {
   },
 
   underline_shapes = {
-    'straight',
-    'double',
-    'curly',
-    'dotted',
-    'dashed',
+    'straight', -- ─────
+    'double',   -- ═════
+    'curly',    -- ﹏﹏﹏
+    'dotted',   -- ┈┈┈┈┈
+    'dashed',   -- ╌╌╌╌╌
   },
 
   cursor_shapes = {
-    'block',
-    'slab',
-    'bar',
+    'block', -- █
+    'slab',  -- ▁
+    'bar',   -- ▎
   },
 
   -- You can preview these here: https://developer.mozilla.org/en-US/docs/Web/CSS/cursor#keyword
@@ -85,18 +54,18 @@ local tty = {
     'not_allowed',
     'grab',
     'grabbing',
-    'e_resize',
-    'n_resize',
-    'ne_resize',
-    'nw_resize',
-    's_resize',
-    'se_resize',
-    'sw_resize',
-    'w_resize',
-    'ew_resize',
-    'ns_resize',
-    'nesw_resize',
-    'nwse_resize',
+    'e_resize',    -- →
+    'n_resize',    -- ↑
+    'ne_resize',   -- ↗
+    'nw_resize',   -- ↖
+    's_resize',    -- ↓
+    'se_resize',   -- ↘
+    'sw_resize',   -- ↙
+    'w_resize',    -- ←
+    'ew_resize',   -- ↔
+    'ns_resize',   -- ↕
+    'nesw_resize', -- ⤢
+    'nwse_resize', -- ⤡
     'col_resize',
     'row_resize',
     'all_scroll',
@@ -104,9 +73,7 @@ local tty = {
     'zoom_out',
   },
 
-  -- Colors caps (foreground, background, underline_color and window_background)
-  -- must be one of: 'true_color', 'ansi', false. Everything must be true or
-  -- false.
+  -- Reminder: color caps must be one of: 'true_color', 'ansi', false.
   cap = {
     foreground = 'true_color',
     background = 'true_color',
@@ -126,20 +93,10 @@ local tty = {
 
   state = {},
 }
-
-tty.write = io.write
-tty.flush = io.flush
-function tty.read(count)
-  return io.read(count or '*a') or ''
-end
-
-local termios = require('core.termios')
-local utils = require('core.utils')
+setmetatable(tty, { __index = require('core.tty.system') })
 
 function tty.setup()
-  termios.enable_raw_mode()
-  io.stdout:setvbuf('full') -- Cranks up boring line buffering to rad full buffering
-
+  tty.enable_raw_mode()
   tty.detect_caps()
   tty.load_functions()
   tty.write('\27[?1049h') -- Switch to the alternate terminal screen
@@ -152,9 +109,7 @@ function tty.restore()
   tty.write('\27[?1049l') -- Switch back to the primary terminal screen
   tty.write('\27[?2004l') -- Disable bracketed paste
   tty.write('\27]22;<\27\\') -- Pop our pointer shape from the stack
-
-  io.stdout:setvbuf('line') -- And back to lame line buffering again…
-  termios.disable_raw_mode()
+  tty.disable_raw_mode()
 end
 
 function tty.detect_caps()
@@ -162,6 +117,7 @@ function tty.detect_caps()
   -- https://github.com/kovidgoyal/kitty/blob/master/kitty/terminfo.py
   -- VTE's commit history: https://gitlab.gnome.org/GNOME/vte/-/commits/master
   -- Konsole's commit history: https://invent.kde.org/utilities/konsole/-/commits/master
+  -- …Which, geez, a pain to follow it was.
   -- xterm's changelog: https://invisible-island.net/xterm/xterm.log.html
   local vte = tonumber(os.getenv('VTE_VERSION')) or -1 -- VTE 0.34.5 (8bea17d1, 68046665)
   local konsole = tonumber(os.getenv('KONSOLE_VERSION')) or -1 -- Konsole 18.07.80 (b0d3d83e, 7e040b61)
@@ -172,25 +128,16 @@ function tty.detect_caps()
     xterm = -1
   end
 
-  -- The terminfo database has a reputation of not being the most reliable nor
-  -- up-to-date and sadly there's no better, widespread way to query the
-  -- terminal's capabilities. For example, on my Debian machine xterm sets $TERM
-  -- to "xterm" instead of "xterm-256color" and that stops terminfo from knowing
-  -- that xterm has the "initc" capability.
-  local terminfo = require('core.terminfo')
-  local getflag = terminfo.getflag
-  local getnum = terminfo.getnum
-  local getstr = terminfo.getstr
-
-  -- This is an XTGETTCAP, which allows us to query the terminal's own terminfo
-  -- entry. It's supported by… a *few* terminals. :/
+  -- This is an XTGETTCAP, which allows us to forget about the unreliable
+  -- system-wide database and query the terminal's own terminfo entry. It's
+  -- supported by… a *few* terminals. :/
   -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Device-Control-functions
   tty.read()
   tty.write('\27P+q', utils.hex_encode('cr'), '\27\\') -- An example query for "cr"
   tty.flush()
   if tty.read():match('^\27P[01]%+r.*\27\\$') then -- The terminal has replied with a well-formed answer.
     -- Flags don't work over XTGETTCAP, in kitty at least.
-    function getnum(capname)
+    function tty.getnum(capname)
       tty.read()
       tty.write('\27P+q', utils.hex_encode(capname), '\27\\')
       tty.flush()
@@ -201,7 +148,7 @@ function tty.detect_caps()
       return result
     end
 
-    function getstr(capname)
+    function tty.getstr(capname)
       tty.read()
       tty.write('\27P+q', utils.hex_encode(capname), '\27\\')
       tty.flush()
@@ -216,34 +163,36 @@ function tty.detect_caps()
   -- VTE 0.35.1 (c5a32b49), Konsole 3.5.4 (f34d8203)
   -- It would probably be better to follow: https://github.com/termstandard/colors#querying-the-terminal
   -- We could also assume that 256-color terminals are always true-color:
-  -- getflag('initc') or os.getenv('TERM'):find('256color')
-  if vte >= 3501 or konsole >= 030504 or xterm >= 331 or getflag('Tc') or os.getenv('COLORTERM') == 'truecolor' or os.getenv('COLORTERM') == '24bit' then
+  -- tty.getflag('initc') or os.getenv('TERM'):find('256color')
+  if vte >= 3501 or konsole >= 030504 or xterm >= 331 or tty.getflag('Tc') or os.getenv('COLORTERM') == 'truecolor' or os.getenv('COLORTERM') == '24bit' then
     tty.cap.foreground = 'true_color'
     tty.cap.background = 'true_color'
-  elseif getnum('colors') >= 8 then
+  elseif tty.getnum('colors') >= 8 then
     tty.cap.foreground = 'ansi'
     tty.cap.background = 'ansi'
   else
+    -- I have yet to see a terminal in the 21st century that does not support
+    -- any kind of text coloring.
     tty.cap.foreground = false
     tty.cap.background = false
   end
 
   -- The Linux console interprets "bold" in its own way.
-  if vte >= 0 or konsole >= 0 or xterm >= 0 or os.getenv('TERM') ~= 'linux' and getstr('bold') then
+  if vte >= 0 or konsole >= 0 or xterm >= 0 or os.getenv('TERM') ~= 'linux' and tty.getstr('bold') then
     tty.cap.bold = true
   else
     tty.cap.bold = false
   end
 
   -- VTE 0.34.1 (ad68297c), Konsole 4.10.80 (68a98ed7)
-  if vte >= 3401 or konsole >= 041080 or xterm >= 305 or getstr('sitm') and getstr('ritm') then
+  if vte >= 3401 or konsole >= 041080 or xterm >= 305 or tty.getstr('sitm') and tty.getstr('ritm') then
     tty.cap.italic = true
   else
     tty.cap.italic = false
   end
 
   -- Konsole 0.8.44 (https://invent.kde.org/utilities/konsole/-/blob/d8f74118/ChangeLog#L99)
-  if vte >= 0 or konsole >= 000844 or xterm >= 0 or os.getenv('TERM') ~= 'linux' and getstr('smul') and getstr('rmul') then
+  if vte >= 0 or konsole >= 000844 or xterm >= 0 or os.getenv('TERM') ~= 'linux' and tty.getstr('smul') and tty.getstr('rmul') then
     tty.cap.underline = true
   else
     tty.cap.underline = false
@@ -251,7 +200,7 @@ function tty.detect_caps()
 
   -- VTE 0.51.2 - color, double, curly (efaf8f3c, a8af47bc); VTE 0.75.90 - dotted, dashed (bec7e6a2); Konsole 22.11.80 (76f879cd)
   -- Smulx does not necessarily indicate color support.
-  if vte >= 5102 or konsole >= 221180 or getflag('Su') or getstr('Setulc') or getstr('Smulx') then
+  if vte >= 5102 or konsole >= 221180 or tty.getflag('Su') or tty.getstr('Setulc') or tty.getstr('Smulx') then
     tty.cap.underline_color = 'true_color'
     tty.cap.underline_shape = true
   else
@@ -260,26 +209,26 @@ function tty.detect_caps()
   end
 
   -- VTE 0.10.2 (a175a436), Konsole 16.07.80 (84b43dfb)
-  if vte >= 1002 or konsole >= 160780 or xterm >= 305 or getstr('smxx') and getstr('rmxx') then
+  if vte >= 1002 or konsole >= 160780 or xterm >= 305 or tty.getstr('smxx') and tty.getstr('rmxx') then
     tty.cap.strikethrough = true
   else
     tty.cap.strikethrough = false
   end
 
   -- VTE 0.49.1 (c9e7cbab), Konsole 20.11.80 (faceafcc)
-  -- There is currently no universal way nor terminfo cap to detect hyperlink
-  -- support. Further reading: https://github.com/kovidgoyal/kitty/issues/68
+  -- There is currently no universal way to detect hyperlink support.
+  -- Further reading: https://github.com/kovidgoyal/kitty/issues/68
   tty.cap.hyperlink = vte >= 4901 or konsole >= 201180 or true
 
   -- VTE 0.1.0 (81af00a6), Konsole 0.8.42 (https://invent.kde.org/utilities/konsole/-/blob/d8f74118/ChangeLog#L107)
-  if vte >= 0100 or konsole >= 000842 or xterm >= 0 or getstr('civis') and getstr('cnorm') then
+  if vte >= 0100 or konsole >= 000842 or xterm >= 0 or tty.getstr('civis') and tty.getstr('cnorm') then
     tty.cap.cursor = true
   else
     tty.cap.cursor = false
   end
 
   -- VTE 0.39.0 (430965a0); Konsole 18.07.80 (7c2a1164); xterm 252 - block, slab; xterm 282 - bar
-  if vte >= 3900 or konsole >= 180780 or xterm >= 282 or getstr('Ss') and getstr('Se') then
+  if vte >= 3900 or konsole >= 180780 or xterm >= 282 or tty.getstr('Ss') and tty.getstr('Se') then
     tty.cap.cursor_shape = true
   else
     tty.cap.cursor_shape = false
@@ -298,7 +247,7 @@ function tty.detect_caps()
   end
 
   -- VTE 0.10.14 (38fb4802, f39e2815)
-  if vte >= 1014 or xterm >= 0 or getstr('tsl') and getstr('fsl') and getstr('dsl') then
+  if vte >= 1014 or xterm >= 0 or tty.getstr('tsl') and tty.getstr('fsl') and tty.getstr('dsl') then
     tty.cap.window_title = true
   else
     tty.cap.window_title = false
@@ -332,26 +281,24 @@ function tty.detect_caps()
   end
 end
 
--- Moves the cursor to the given position on the screen indexed from 1.
-function tty.goto(x, y)
-  tty.write('\27[', y, ';', x, 'H')
-end
-
--- Clears the screen.
 function tty.clear()
   tty.write('\27[2J')
 end
 
--- Resets all text attributes to default.
+function tty.goto(x, y)
+  tty.write('\27[', y, ';', x, 'H')
+end
+
 function tty.reset()
   tty.write('\27[0m')
   tty.set_hyperlink()
   tty.state = {}
 end
 
--- Loads all the functions whose values depend on the terminal's capabilities.
 function tty.load_functions()
-  -- Escape sequence reference: https://wezfurlong.org/wezterm/escape-sequences.html
+  -- Escape sequence references:
+  -- - man 4 console_codes
+  -- - https://wezfurlong.org/wezterm/escape-sequences.html
   -- Further reading: https://gpanders.com/blog/state-of-the-terminal/
   -- Terminals ignore unknown OSC sequences, so stubs for them improve
   -- performance only.
@@ -402,8 +349,6 @@ function tty.load_functions()
       end
     end
   else
-    -- I have yet to see a terminal in the 21st century that does not support
-    -- any kind of text coloring.
     function tty.set_foreground() end
   end
 
@@ -558,7 +503,6 @@ function tty.load_functions()
     function tty.set_underline_color() end
   end
 
-  -- Name must be one of underline_shapes or nil for the terminal default.
   if tty.cap.underline_shape then
     function tty.set_underline_shape(name)
       tty.state.underline_shape = name
@@ -586,15 +530,11 @@ function tty.load_functions()
   if tty.cap.hyperlink then
     function tty.set_hyperlink(url)
       -- Reference: https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda
-      if url then
-        -- ESCs and all other ASCII control characters are disallowed in valid URLs
-        -- anyways. According to the specification in the link above we should also
-        -- percent-encode all bytes outside of the 32-126 range but who cares?
-        -- *It works on my machine.* ¯\_(ツ)_/¯
-        tty.write('\27]8;;', url:gsub('\27', '%%1b'), '\27\\')
-      else
-        tty.write('\27]8;;\27\\')
-      end
+      -- ESCs and all other ASCII control characters are disallowed in valid URLs
+      -- anyways. According to the specification in the link above we should also
+      -- percent-encode all bytes outside of the 32-126 range but who cares?
+      -- *It works on my machine.* ¯\_(ツ)_/¯
+      tty.write('\27]8;;', (url or ''):gsub('\27', '%%1b'), '\27\\')
     end
   else
     function tty.set_hyperlink() end
@@ -602,7 +542,9 @@ function tty.load_functions()
 
   if tty.cap.cursor then
     function tty.set_cursor(is_visible)
-      if is_visible == true or is_visible == nil then -- A visible cursor should be the default.
+      -- There's no "reset cursor visibility to default" code, unless we query
+      -- terminfo for "cnorm".
+      if is_visible == true or is_visible == nil then
         tty.write('\27[?25h')
       else
         tty.write('\27[?25l')
@@ -627,6 +569,7 @@ function tty.load_functions()
     else
       function tty.set_cursor_shape(name)
         -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Functions-using-CSI-_-ordered-by-the-final-character_s_
+        -- This utilizes only the blinking versions of the cursor shapes.
         if name == 'block' then
           tty.write('\27[1 q')
         elseif name == 'slab' then
@@ -655,12 +598,12 @@ function tty.load_functions()
   end
 
   if tty.cap.window_title then
-    function tty.set_window_title(string)
+    function tty.set_window_title(text)
       -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Operating-System-Commands
-      if string == '' then
+      if text == '' then
         tty.write('\27]2; \27\\') -- Because '' should make the title empty, and not set it to terminal default.
       else
-        tty.write('\27]2;', (string or ''):gsub('\27', ''), '\27\\')
+        tty.write('\27]2;', (text or ''):gsub('\27', ''), '\27\\')
       end
     end
   else
@@ -671,7 +614,7 @@ function tty.load_functions()
     function tty.set_window_background(red, green, blue)
       -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Operating-System-Commands
       if blue then
-        -- I don't know why but this is ridiculously slow on kitty and st.
+        -- I don't know why, but this is ridiculously slow on kitty and st.
         -- Fun fact: xterm-compatibles accept X11 color names here, which you
         -- can find in /etc/X11/rgb.txt.
         tty.write(string.format('\27]11;#%02x%02x%02x\27\\', red, green, blue))

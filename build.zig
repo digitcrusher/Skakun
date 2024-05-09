@@ -23,6 +23,11 @@ pub fn build(b: *std.Build) void {
     .install_subdir = "",
     .include_extensions = &.{".lua"},
   });
+  b.installDirectory(.{
+    .source_dir = b.path("doc"),
+    .install_dir = .{ .custom = "doc" },
+    .install_subdir = "",
+  });
 
   var run = b.addRunArtifact(exe);
   if(b.option([]const u8, "term", "The terminal to run the app in")) |term| {
