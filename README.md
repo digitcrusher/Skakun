@@ -4,6 +4,7 @@
 - Not just a code editor - support for binary files
 - Let the user modify every behavior with Lua (Lite-or-Emacs-style)
 - Make the most out of the terminal
+- More forward-looking than backwards-compatible
 
 
 We need:

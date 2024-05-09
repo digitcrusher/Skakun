@@ -16,6 +16,31 @@ pub fn build(b: *std.Build) void {
   exe.linkSystemLibrary("lua-5.1");
   exe.linkSystemLibrary("tinfo");
 
+  var version: []const u8 = undefined;
+  if(b.option([]const u8, "version", "Application version string")) |x| {
+    version = x;
+  } else {
+    const latest_commit = std.mem.trim(u8, b.run(&.{"git", "rev-parse", "--short", "HEAD"}), &std.ascii.whitespace);
+    var git_output = std.mem.tokenizeAny(u8, b.run(&.{"git", "tag", "--sort=-v:refname"}), &std.ascii.whitespace);
+    if(git_output.next()) |version_tag| {
+      version = std.mem.trimLeft(u8, version_tag, "v");
+
+      var exit_code: u8 = undefined;
+      _ = b.runAllowFail(&.{"git", "diff", "--quiet", version_tag}, &exit_code, .Inherit) catch |err| if(err != error.ExitCodeFailure) {
+        std.log.err("failed to git diff last version: {}", .{err});
+        std.process.exit(1);
+      };
+      if(exit_code != 0) {
+        version = std.mem.concat(b.allocator, u8, &.{version, "-dirty+", latest_commit}) catch @panic("OOM");
+      }
+    } else {
+      version = std.mem.concat(b.allocator, u8, &.{"0.0.0+", latest_commit}) catch @panic("OOM");
+    }
+  }
+  const options = b.addOptions();
+  options.addOption([]const u8, "version", version);
+  exe.root_module.addOptions("build", options);
+
   b.installArtifact(exe);
   b.installDirectory(.{
     .source_dir = b.path("src"),
@@ -32,7 +57,7 @@ pub fn build(b: *std.Build) void {
   var run = b.addRunArtifact(exe);
   if(b.option([]const u8, "term", "The terminal to run the app in")) |term| {
     if(std.mem.eql(u8, term, "gnome-terminal")) {
-      run = b.addSystemCommand(&.{"gnome-terminal", "--", "sh", "-c", "./zig-out/bin/skak; sh"});
+      run = b.addSystemCommand(&.{"gnome-terminal", "--", "sh", "-c", "./zig-out/bin/skak \"$@\"; sh", "_"});
     } else if(std.mem.eql(u8, term, "kitty")) {
       run = b.addSystemCommand(&.{"kitty", "--hold"});
       run.addArtifactArg(exe);
@@ -40,7 +65,7 @@ pub fn build(b: *std.Build) void {
       run = b.addSystemCommand(&.{"konsole", "--hold", "-e"});
       run.addArtifactArg(exe);
     } else if(std.mem.eql(u8, term, "st")) {
-      run = b.addSystemCommand(&.{"st", "-e", "sh", "-c", "./zig-out/bin/skak; sh"});
+      run = b.addSystemCommand(&.{"st", "-e", "sh", "-c", "./zig-out/bin/skak \"$@\"; sh", "_"});
     } else if(std.mem.eql(u8, term, "xfce4-terminal")) {
       run = b.addSystemCommand(&.{"xfce4-terminal", "--hold", "-x"});
       run.addArtifactArg(exe);
@@ -49,7 +74,7 @@ pub fn build(b: *std.Build) void {
       run.addArtifactArg(exe);
     } else {
       std.log.err("unknown terminal: {s}", .{term});
-      std.posix.exit(1);
+      std.process.exit(1);
     }
   }
   run.step.dependOn(b.getInstallStep());
