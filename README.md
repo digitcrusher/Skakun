@@ -18,9 +18,10 @@ The following terminals have first-class support:
 - GNOME Terminal
 - kitty
 - Konsole
-- Linux VT
+- Linux console
 - st
 - Windows Terminal
 - Xfce Terminal
+- xterm
 
 2. Install GIO, Lua 5.1 and ncurses (`apt install libglib2.0-dev liblua5.1-dev libncurses-dev` on Debian)

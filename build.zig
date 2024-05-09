@@ -24,12 +24,34 @@ pub fn build(b: *std.Build) void {
     .include_extensions = &.{".lua"},
   });
 
-  const run_cmd = b.addRunArtifact(exe);
-  run_cmd.step.dependOn(b.getInstallStep());
+  var run = b.addRunArtifact(exe);
+  if(b.option([]const u8, "term", "The terminal to run the app in")) |term| {
+    if(std.mem.eql(u8, term, "gnome-terminal")) {
+      run = b.addSystemCommand(&.{"gnome-terminal", "--", "sh", "-c", "./zig-out/bin/skak; sh"});
+    } else if(std.mem.eql(u8, term, "kitty")) {
+      run = b.addSystemCommand(&.{"kitty", "--hold"});
+      run.addArtifactArg(exe);
+    } else if(std.mem.eql(u8, term, "konsole")) {
+      run = b.addSystemCommand(&.{"konsole", "--hold", "-e"});
+      run.addArtifactArg(exe);
+    } else if(std.mem.eql(u8, term, "st")) {
+      run = b.addSystemCommand(&.{"st", "-e", "sh", "-c", "./zig-out/bin/skak; sh"});
+    } else if(std.mem.eql(u8, term, "xfce4-terminal")) {
+      run = b.addSystemCommand(&.{"xfce4-terminal", "--hold", "-x"});
+      run.addArtifactArg(exe);
+    } else if(std.mem.eql(u8, term, "xterm")) {
+      run = b.addSystemCommand(&.{"xterm", "-hold"});
+      run.addArtifactArg(exe);
+    } else {
+      std.log.err("unknown terminal: {s}", .{term});
+      std.posix.exit(1);
+    }
+  }
+  run.step.dependOn(b.getInstallStep());
   if(b.args) |args| {
-    run_cmd.addArgs(args);
+    run.addArgs(args);
   }
 
   const run_step = b.step("run", "Run the app");
-  run_step.dependOn(&run_cmd.step);
+  run_step.dependOn(&run.step);
 }
