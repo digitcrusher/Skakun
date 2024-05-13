@@ -21,7 +21,6 @@ const gio = @cImport({
 });
 
 // TODO: do we need an insert stack?
-// TODO: copying between buffers
 // TODO: converting between byte offests and line/cols
 // TODO: detecting mmap file changes -> mark the buffer as corrupt
 // TODO: buffer diffs
@@ -94,6 +93,7 @@ const Node = struct {
   width: usize,
 
   fn create(editor: *Editor, frag: *Fragment, start: usize, end: usize) !*Node {
+    std.debug.assert(start < end and end <= frag.data.len);
     const self = try editor.allocator.create(Node);
     self.* = .{
       .frag = .{
@@ -341,9 +341,9 @@ pub const Buffer = struct {
     if(!self.is_frozen) {
       return self;
     }
-    const copy = try Buffer.create(self.editor, self.root);
-    copy.parent = self;
-    return copy;
+    const clone = try Buffer.create(self.editor, self.root);
+    clone.parent = self;
+    return clone;
   }
 
   pub fn read(self: *Buffer, offset: usize, dest: []u8) !usize {
@@ -424,12 +424,9 @@ pub const Buffer = struct {
           }
 
           const new_name = try std.fmt.allocPrintZ(self.editor.allocator, ".{s}.skak-{x:0>8}", .{name, self.editor.rng.random().int(u32)});
-          var should_free_new_name = true;
-          defer if(should_free_new_name) self.editor.allocator.free(new_name);
           try std.posix.renameat(dir_fd, name, dir_fd, new_name);
           try self.editor.moved_mmapped_files.append(.{ .dir_fd = dir_fd, .name = new_name });
           should_close_dir_fd = false;
-          should_free_new_name = false;
 
           // We don't want to close a file descriptor twice.
           std.posix.close(fd);
@@ -461,21 +458,22 @@ pub const Buffer = struct {
     if(data.len <= 0) return;
 
     const node = try Node.create(self.editor, try Fragment.create(self.editor, .Allocator, try self.editor.allocator.dupe(u8, data)), 0, data.len);
-    if(self.root == null) {
+
+    if(self.root) |root| {
+      self.root = null;
+      defer root.unref(self.editor);
+
+      const a, const b = try root.split_ref(self.editor, offset);
+      defer {
+        if(a) |x| x.unref(self.editor);
+        if(b) |x| x.unref(self.editor);
+      }
+      self.root = (try Node.merge(self.editor, try Node.merge(self.editor, a, node), b)).?.ref();
+
+    } else {
+      if(offset > 0) return error.OutOfBounds;
       self.root = node.ref();
-      return;
     }
-
-    const old_root = self.root.?;
-    self.root = null;
-    defer old_root.unref(self.editor);
-
-    const a, const b = try old_root.split_ref(self.editor, offset);
-    defer {
-      if(a) |x| x.unref(self.editor);
-      if(b) |x| x.unref(self.editor);
-    }
-    self.root = (try Node.merge(self.editor, try Node.merge(self.editor, a, node), b)).?.ref();
   }
 
   pub fn delete(self: *Buffer, start: usize, end: usize) !void {
@@ -483,11 +481,11 @@ pub const Buffer = struct {
     if(start >= end) return;
     if(self.root == null) return error.OutOfBounds;
 
-    const old_root = self.root.?;
+    const root = self.root.?;
     self.root = null;
-    defer old_root.unref(self.editor);
+    defer root.unref(self.editor);
 
-    const ab, const c = try old_root.split_ref(self.editor, end);
+    const ab, const c = try root.split_ref(self.editor, end);
     defer {
       ab.?.unref(self.editor);
       if(c) |x| x.unref(self.editor);
@@ -502,15 +500,47 @@ pub const Buffer = struct {
     }
   }
 
-  // pub fn copy(self: *Buffer, offset: usize, src: *Buffer, start: usize, end: usize) !void {
-  //   if(self.is_frozen) {
-  //     return error.BufferFrozen;
-  //   } else if(!src.is_frozen) {
-  //     return error.BufferNotFrozen;
-  //   }
-  //   std.debug.assert(self.editor == src.buffer.editor);
-  //   // TODO
-  // }
+  pub fn copy(self: *Buffer, offset: usize, src: *Buffer, start: usize, end: usize) !void {
+    std.debug.assert(self.editor == src.editor);
+    if(self.is_frozen) return error.BufferFrozen;
+    if(start >= end) return;
+    if(src.root == null) return error.OutOfBounds;
+
+    const node = if(self.editor.copy_cache.get(.{ .src = src.root.?, .start = start, .end = end })) |x| x else b: {
+      src.root.?.is_frozen = true;
+      const ab, const c = try src.root.?.split_ref(self.editor, end);
+      defer {
+        ab.?.unref(self.editor);
+        if(c) |x| x.unref(self.editor);
+      }
+      const a, const b = try ab.?.split_ref(self.editor, start);
+      defer {
+        if(a) |x| x.unref(self.editor);
+        b.?.unref(self.editor);
+      }
+
+      b.?.is_frozen = true; // …before we put it in the cache.
+      try self.editor.copy_cache.putNoClobber(.{ .src = src.root.?, .start = start, .end = end }, b.?.ref());
+
+      break :b b.?;
+    };
+
+    if(self.root) |root| {
+      self.root = null;
+      defer root.unref(self.editor);
+
+      const a, const b = try root.split_ref(self.editor, offset);
+      defer {
+        if(a) |x| x.unref(self.editor);
+        if(b) |x| x.unref(self.editor);
+      }
+      self.root = (try Node.merge(self.editor, try Node.merge(self.editor, a, node), b)).?.ref();
+
+    } else {
+      if(offset > 0) return error.OutOfBounds;
+      self.root = node.ref();
+    }
+  }
 };
 
 pub const Editor = struct {
@@ -524,6 +554,11 @@ pub const Editor = struct {
     dir_fd: std.posix.fd_t,
     name: [:0]u8,
   }),
+  copy_cache: std.AutoHashMap(struct {
+    src: *Node,
+    start: usize,
+    end: usize,
+  }, *Node),
 
   pub fn init(allocator: std.mem.Allocator) Editor {
     var self = Editor{
@@ -531,9 +566,11 @@ pub const Editor = struct {
       .rng = std.rand.DefaultPrng.init(@bitCast(@as(i64, @truncate(std.time.nanoTimestamp())))),
       .mmaps = undefined,
       .moved_mmapped_files = undefined,
+      .copy_cache = undefined,
     };
     self.mmaps = @TypeOf(self.mmaps).init(allocator);
     self.moved_mmapped_files = @TypeOf(self.moved_mmapped_files).init(allocator);
+    self.copy_cache = @TypeOf(self.copy_cache).init(allocator);
     return self;
   }
 
@@ -544,6 +581,16 @@ pub const Editor = struct {
       self.allocator.free(file.name);
     }
     self.moved_mmapped_files.deinit();
+    self.clear_cache();
+    self.copy_cache.deinit();
+  }
+
+  pub fn clear_cache(self: *Editor) void {
+    var iter = self.copy_cache.valueIterator();
+    while(iter.next()) |node| {
+      node.*.unref(self);
+    }
+    self.copy_cache.clearAndFree();
   }
 
   pub fn open(self: *Editor, path: []const u8, err_msg: ?*?[]u8) !*Buffer {

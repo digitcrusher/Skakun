@@ -100,6 +100,9 @@ pub fn main() !void {
     try buffer.delete(0, data.len);
     try buffer.insert(0, data);
 
+    try buffer.copy(200, buffer, 0, 100);
+    try buffer.delete(0, 100);
+
     buffer.save(args[2], &err_msg) catch |err| {
       if(err_msg) |x| {
         defer editor.allocator.free(x);
