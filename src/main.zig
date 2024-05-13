@@ -73,25 +73,48 @@ pub fn main() !void {
     return;
   }
 
-  // {
-  //   var editor = Editor.init(gpa.allocator());
-  //   //var buffer = try editor.open("https://lacina.io/lacian/after-setup.md");
-  //   var buffer = try editor.open("test");
-  //   defer buffer.destroy();
+  {
+    var editor = Editor.init(gpa.allocator());
+    defer editor.deinit();
 
-  //   var data: [2048]u8 = undefined;
+    var err_msg: ?[]u8 = null;
+    var buffer = editor.open(args[1], &err_msg) catch |err| {
+      if(err_msg) |x| {
+        defer editor.allocator.free(x);
+        std.debug.print("{s}: {s}\n", .{@errorName(err), x});
+      } else {
+        std.debug.print("{s}\n", .{@errorName(err)});
+      }
+      std.process.exit(1);
+    };
+    defer buffer.destroy();
 
-  //   try buffer.insert(28, "- Wyłącz komputer i pójdź do psychologa.\n");
-  //   //try buffer.read(0, data[0 .. buffer.root.?.width]);
-  //   //std.debug.print("{s}", .{data[0 .. buffer.root.?.width]});
-  //   try buffer.delete(73, 1274);
-  //   try buffer.read(0, &data);
-  //   std.debug.print("{s}", .{data});
-  // }
+    //try buffer.insert(28, "- Wyłącz komputer i pójdź do psychologa.\n");
+    //try buffer.delete(73, 1274);
 
-  // _ = gpa.detectLeaks();
+    var buf: [1024]u8 = undefined;
+    const data = buf[0 .. try buffer.read(0, &buf)];
+    for(data) |*x| {
+      x.* = if(std.ascii.isLower(x.*)) std.ascii.toUpper(x.*) else std.ascii.toLower(x.*);
+    }
+    try buffer.delete(0, data.len);
+    try buffer.insert(0, data);
 
-  const vm = lua.luaL_newstate() orelse return error.SomeKindOfMemoryError;
+    buffer.save(args[2], &err_msg) catch |err| {
+      if(err_msg) |x| {
+        defer editor.allocator.free(x);
+        std.debug.print("{s}: {s}\n", .{@errorName(err), x});
+      } else {
+        std.debug.print("{s}\n", .{@errorName(err)});
+      }
+      std.process.exit(1);
+    };
+  }
+
+  _ = gpa.detectLeaks();
+
+  if(false) {
+  const vm = lua.luaL_newstate() orelse return error.OutOfMemory;
   defer lua.lua_close(vm);
   lua.luaL_openlibs(vm);
 
@@ -148,5 +171,6 @@ pub fn main() !void {
     \\)
   )) {
     return error.LuaError;
+  }
   }
 }

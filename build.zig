@@ -12,7 +12,7 @@ pub fn build(b: *std.Build) void {
     .optimize = optimize,
   });
   exe.linkLibC();
-  exe.linkSystemLibrary("gio-2.0");
+  exe.linkSystemLibrary("gio-unix-2.0");
   exe.linkSystemLibrary("lua-5.1");
   exe.linkSystemLibrary("tinfo");
 
