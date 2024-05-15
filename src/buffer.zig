@@ -19,16 +19,21 @@ const gio = @cImport({
   @cInclude("gio/gio.h");
   @cInclude("gio/gunixoutputstream.h");
 });
+const Allocator = std.mem.Allocator;
+const posix = std.posix;
 
 // TODO: do we need an insert stack?
 // TODO: converting between byte offests and line/cols
-// TODO: detecting mmap file changes -> mark the buffer as corrupt
 // TODO: buffer diffs
 // TODO: force load mmaps
 
 // Some methods have an optional "err_msg" parameter, which on failure, may be
 // set to an error message from GIO. The caller is reponsible for freeing
 // err_msg with the Editor's allocator afterwards.
+
+// Even if the backup file has been renamed, moved, modified or deleted, the
+// editor will still try to delete a file under the same name in the original
+// directory.
 
 const Fragment = struct {
   const Owner = enum {
@@ -39,9 +44,14 @@ const Fragment = struct {
   data: []u8,
 
   // Data specific to mmaps
-  fd: ?std.posix.fd_t = null,
+  is_corrupt: bool = false,
+  // A file descriptor's inode number is constant. Even then, an mmap is bound
+  // to the inode, and not the file descriptor.
+  st_dev: posix.dev_t = undefined,
+  st_ino: posix.ino_t = undefined,
+  file_monitor: ?*gio.GFileMonitor = null,
 
-  fn create(editor: *Editor, owner: Owner, data: []u8) !*Fragment {
+  fn create(editor: *Editor, owner: Owner, data: []u8) Allocator.Error!*Fragment {
     const self = try editor.allocator.create(Fragment);
     self.* = .{
       .owner = owner,
@@ -69,8 +79,10 @@ const Fragment = struct {
         gio.g_free(self.data.ptr);
       },
       .Mmap => {
-        std.posix.munmap(@alignCast(self.data));
-        std.posix.close(self.fd.?);
+        posix.munmap(@alignCast(self.data));
+        if(self.file_monitor) |x| {
+          gio.g_object_unref(x);
+        }
         _ = editor.mmaps.swapRemove(std.mem.indexOfScalar(*Fragment, editor.mmaps.items, self).?);
       },
     }
@@ -79,6 +91,12 @@ const Fragment = struct {
 };
 
 const Node = struct {
+  const Stats = struct {
+    bytes: usize,
+    has_healthy_mmap: bool,
+    has_corrupt_mmap: bool,
+  };
+
   refc: i32 = 0,
   is_frozen: bool = false,
   frag: struct {
@@ -90,9 +108,9 @@ const Node = struct {
   priority: u32,
   left: ?*Node = null,
   right: ?*Node = null,
-  width: usize,
+  stats: Stats,
 
-  fn create(editor: *Editor, frag: *Fragment, start: usize, end: usize) !*Node {
+  fn create(editor: *Editor, frag: *Fragment, start: usize, end: usize) Allocator.Error!*Node {
     std.debug.assert(start < end and end <= frag.data.len);
     const self = try editor.allocator.create(Node);
     self.* = .{
@@ -102,9 +120,9 @@ const Node = struct {
         .end = end,
       },
       .priority = editor.rng.random().int(@TypeOf(self.priority)),
-      .width = undefined,
+      .stats = undefined,
     };
-    self.update_stats();
+    self.update_stats(false);
     return self;
   }
 
@@ -126,7 +144,7 @@ const Node = struct {
     editor.allocator.destroy(self);
   }
 
-  fn melt(self: *Node, editor: *Editor) !*Node {
+  fn melt(self: *Node, editor: *Editor) Allocator.Error!*Node {
     if(!self.is_frozen) {
       return self;
     }
@@ -144,11 +162,10 @@ const Node = struct {
         .end = self.frag.end,
       },
       .priority = self.priority,
-      .width = undefined,
+      .left = if(self.left) |x| x.ref() else null,
+      .right = if(self.right) |x| x.ref() else null,
+      .stats = self.stats,
     };
-    copy.set_left(editor, self.left);
-    copy.set_right(editor, self.right);
-    copy.update_stats();
     return copy;
   }
 
@@ -170,28 +187,55 @@ const Node = struct {
     self.right = if(value) |x| x.ref() else null;
   }
 
-  fn update_stats(self: *Node) void {
-    self.width = self.frag.end - self.frag.start;
-    if(self.left) |x| {
-      self.width += x.width;
+  fn update_stats(self: *Node, should_recurse: bool) void {
+    self.stats.bytes = self.frag.end - self.frag.start;
+    if(self.frag.ptr.owner == .Mmap) {
+      if(self.frag.ptr.is_corrupt) {
+        self.stats.has_corrupt_mmap = true;
+      } else {
+        self.stats.has_healthy_mmap = true;
+      }
     }
+
+    if(self.left) |x| {
+      if(should_recurse) {
+        x.update_stats(true);
+      }
+      self.stats.bytes += x.stats.bytes;
+      if(x.stats.has_healthy_mmap) {
+        self.stats.has_healthy_mmap = true;
+      }
+      if(x.stats.has_corrupt_mmap) {
+        self.stats.has_corrupt_mmap = true;
+      }
+    }
+
     if(self.right) |x| {
-      self.width += x.width;
+      if(should_recurse) {
+        x.update_stats(true);
+      }
+      self.stats.bytes += x.stats.bytes;
+      if(x.stats.has_healthy_mmap) {
+        self.stats.has_healthy_mmap = true;
+      }
+      if(x.stats.has_corrupt_mmap) {
+        self.stats.has_corrupt_mmap = true;
+      }
     }
   }
 
-  fn merge(editor: *Editor, maybe_a: ?*Node, maybe_b: ?*Node) !?*Node {
+  fn merge(editor: *Editor, maybe_a: ?*Node, maybe_b: ?*Node) Allocator.Error!?*Node {
     var a = maybe_a orelse return maybe_b;
     var b = maybe_b orelse return maybe_a;
     if(a.priority >= b.priority) {
       const result = try a.melt(editor);
       result.set_right(editor, try Node.merge(editor, a.right, b));
-      result.update_stats();
+      result.update_stats(false);
       return result;
     } else {
       const result = try b.melt(editor);
       result.set_left(editor, try Node.merge(editor, a, b.left));
-      result.update_stats();
+      result.update_stats(false);
       return result;
     }
   }
@@ -204,39 +248,39 @@ const Node = struct {
     }
 
     if(self.left) |left| {
-      if(offset <= left.width) {
+      if(offset <= left.stats.bytes) {
         const b = try self.melt(editor);
         const sub = try left.split_ref(editor, offset);
         b.set_left(editor, sub[1]);
         if(sub[1]) |x| x.unref(editor);
-        b.update_stats();
+        b.update_stats(false);
         return .{sub[0], b.ref()};
       }
-      offset -= left.width;
+      offset -= left.stats.bytes;
     }
 
     if(offset < self.frag.end - self.frag.start) {
       const b = try Node.create(editor, self.frag.ptr, self.frag.start + offset, self.frag.end);
       b.set_right(editor, self.right);
-      b.update_stats();
+      b.update_stats(false);
       const a = try self.melt(editor);
       a.frag.end = a.frag.start + offset;
       a.set_right(editor, null);
-      a.update_stats();
+      a.update_stats(false);
       return .{a.ref(), b.ref()};
     }
     offset -= self.frag.end - self.frag.start;
 
     if(self.right) |right| {
-      if(offset < right.width) {
+      if(offset < right.stats.bytes) {
         const a = try self.melt(editor);
         const sub = try right.split_ref(editor, offset);
         a.set_right(editor, sub[0]);
         if(sub[0]) |x| x.unref(editor);
-        a.update_stats();
+        a.update_stats(false);
         return .{a.ref(), sub[1]};
       }
-      offset -= right.width;
+      offset -= right.stats.bytes;
     }
 
     return if(offset == 0) .{self.ref(), null} else error.OutOfBounds;
@@ -244,7 +288,7 @@ const Node = struct {
 
   fn read(self: *Node, offset_: usize, dest: []u8) !usize {
     var offset = offset_;
-    if(offset > self.width) return error.OutOfBounds;
+    if(offset > self.stats.bytes) return error.OutOfBounds;
     if(dest.len <= 0) {
       return 0;
     }
@@ -252,11 +296,11 @@ const Node = struct {
     var readc: usize = 0;
 
     if(self.left) |left| {
-      if(offset < left.width) {
+      if(offset < left.stats.bytes) {
         readc += try left.read(offset, dest);
         offset = 0;
       } else {
-        offset -= left.width;
+        offset -= left.stats.bytes;
       }
     }
 
@@ -292,7 +336,7 @@ const Node = struct {
   }
 
   fn debug(self: *Node) void {
-    std.debug.print("node {} {} {}\n", .{self.priority, self.frag.end - self.frag.start, self.width});
+    std.debug.print("node {} {} {}\n", .{self.priority, self.frag.end - self.frag.start, self.stats.bytes});
     if(self.left) |x| {
       x.debug();
     } else {
@@ -311,14 +355,14 @@ pub const Buffer = struct {
   root: ?*Node,
   is_frozen: bool = false,
   freeze_time_ms: i64 = undefined,
-  parent: ?*Buffer = null,
 
-  fn create(editor: *Editor, root: ?*Node) !*Buffer {
+  fn create(editor: *Editor, root: ?*Node) Allocator.Error!*Buffer {
     const self = try editor.allocator.create(Buffer);
     self.* = .{
       .editor = editor,
       .root = if(root) |x| x.ref() else null,
     };
+    try self.editor.buffers.append(self);
     return self;
   }
 
@@ -326,6 +370,7 @@ pub const Buffer = struct {
     if(self.root) |x| {
       x.unref(self.editor);
     }
+    _ = self.editor.buffers.swapRemove(std.mem.indexOfScalar(*Buffer, self.editor.buffers.items, self).?);
     self.editor.allocator.destroy(self);
   }
 
@@ -337,13 +382,8 @@ pub const Buffer = struct {
     self.freeze_time_ms = std.time.milliTimestamp();
   }
 
-  pub fn melt(self: *Buffer) !*Buffer {
-    if(!self.is_frozen) {
-      return self;
-    }
-    const clone = try Buffer.create(self.editor, self.root);
-    clone.parent = self;
-    return clone;
+  pub fn melt(self: *Buffer) Allocator.Error!*Buffer {
+    return if(self.is_frozen) Buffer.create(self.editor, self.root) else self;
   }
 
   pub fn read(self: *Buffer, offset: usize, dest: []u8) !usize {
@@ -372,7 +412,7 @@ pub const Buffer = struct {
       output = @ptrCast(gio.g_file_replace(file, null, 0, gio.G_FILE_CREATE_NONE, null, &err) orelse return handle_gio_error(err.?, self.editor.allocator, err_msg));
 
     } else {
-      var fd: std.posix.fd_t = undefined;
+      var fd: posix.fd_t = undefined;
 
       // This whole mess is here just to prevent us from overwriting existing
       // files mmapped by us, which would corrupt the mmaps in question. To
@@ -386,7 +426,7 @@ pub const Buffer = struct {
       // This is morally wrong: https://insanecoding.blogspot.com/2007/11/pathmax-simply-isnt.html
       var buf: [std.fs.max_path_bytes]u8 = undefined;
       // This does return error.FileNotFound even if a symlink exists but is broken.
-      const maybe_real_path = std.posix.realpathZ(path, &buf) catch |err2| if(err2 == error.FileNotFound) null else return err2;
+      const maybe_real_path = posix.realpathZ(path, &buf) catch |err2| if(err2 == error.FileNotFound) null else return err2;
 
       if(maybe_real_path) |real_path| {
         const dir_path = std.fs.path.dirname(real_path) orelse {
@@ -394,20 +434,19 @@ pub const Buffer = struct {
         };
         const name = std.fs.path.basename(real_path);
 
-        const dir_fd = try std.posix.open(dir_path, .{ .ACCMODE = .RDONLY, .DIRECTORY = true }, 0);
+        const dir_fd = try posix.open(dir_path, .{ .ACCMODE = .RDONLY, .DIRECTORY = true }, 0);
         var should_close_dir_fd = true;
-        defer if(should_close_dir_fd) std.posix.close(dir_fd);
+        defer if(should_close_dir_fd) posix.close(dir_fd);
 
-        fd = try std.posix.openat(dir_fd, name, .{ .ACCMODE = .WRONLY }, 0);
+        fd = try posix.openat(dir_fd, name, .{ .ACCMODE = .WRONLY }, 0);
         var should_close_fd = true;
-        defer if(should_close_fd) std.posix.close(fd);
+        defer if(should_close_fd) posix.close(fd);
 
-        const stat = try std.posix.fstat(fd);
+        const stat = try posix.fstat(fd);
 
         var is_mmap = false;
         for(self.editor.mmaps.items) |mmap| {
-          const mmap_stat = try std.posix.fstat(mmap.fd.?);
-          if(mmap_stat.dev == stat.dev and mmap_stat.ino == stat.ino) {
+          if(mmap.st_dev == stat.dev and mmap.st_ino == stat.ino) {
             is_mmap = true;
             break;
           }
@@ -424,21 +463,21 @@ pub const Buffer = struct {
           }
 
           const new_name = try std.fmt.allocPrintZ(self.editor.allocator, ".{s}.skak-{x:0>8}", .{name, self.editor.rng.random().int(u32)});
-          try std.posix.renameat(dir_fd, name, dir_fd, new_name);
+          try posix.renameat(dir_fd, name, dir_fd, new_name);
           try self.editor.moved_mmapped_files.append(.{ .dir_fd = dir_fd, .name = new_name });
           should_close_dir_fd = false;
 
           // We don't want to close a file descriptor twice.
-          std.posix.close(fd);
+          posix.close(fd);
           should_close_fd = false;
-          fd = try std.posix.openat(dir_fd, name, .{ .ACCMODE = .WRONLY, .CREAT = true, .EXCL = true }, stat.mode);
+          fd = try posix.openat(dir_fd, name, .{ .ACCMODE = .WRONLY, .CREAT = true, .EXCL = true }, stat.mode);
 
         } else {
           should_close_fd = false;
         }
 
       } else {
-        fd = try std.posix.openZ(path, .{ .ACCMODE = .WRONLY, .CREAT = true, .EXCL = true }, std.fs.File.default_mode);
+        fd = try posix.openZ(path, .{ .ACCMODE = .WRONLY, .CREAT = true, .EXCL = true }, std.fs.File.default_mode);
       }
 
       output = gio.g_unix_output_stream_new(fd, 1);
@@ -544,31 +583,37 @@ pub const Buffer = struct {
 };
 
 pub const Editor = struct {
-  allocator: std.mem.Allocator,
+  allocator: Allocator,
   rng: std.rand.DefaultPrng,
 
   max_load_size: usize = 100_000_000,
 
   mmaps: std.ArrayList(*Fragment),
-  moved_mmapped_files: std.ArrayList(struct {
-    dir_fd: std.posix.fd_t,
+  buffers: std.ArrayList(*Buffer),
+  moved_mmapped_files: std.ArrayList(struct { // Multiple fragments can refer to the same file, just how there can be many file descriptors referring to one file.
+    dir_fd: posix.fd_t,
     name: [:0]u8,
   }),
+  gio_async_ctx: *gio.GMainContext,
+
   copy_cache: std.AutoHashMap(struct {
     src: *Node,
     start: usize,
     end: usize,
   }, *Node),
 
-  pub fn init(allocator: std.mem.Allocator) Editor {
+  pub fn init(allocator: Allocator) Editor {
     var self = Editor{
       .allocator = allocator,
       .rng = std.rand.DefaultPrng.init(@bitCast(@as(i64, @truncate(std.time.nanoTimestamp())))),
       .mmaps = undefined,
+      .buffers = undefined,
       .moved_mmapped_files = undefined,
+      .gio_async_ctx = gio.g_main_context_new().?,
       .copy_cache = undefined,
     };
     self.mmaps = @TypeOf(self.mmaps).init(allocator);
+    self.buffers = @TypeOf(self.buffers).init(allocator);
     self.moved_mmapped_files = @TypeOf(self.moved_mmapped_files).init(allocator);
     self.copy_cache = @TypeOf(self.copy_cache).init(allocator);
     return self;
@@ -576,11 +621,13 @@ pub const Editor = struct {
 
   pub fn deinit(self: *Editor) void {
     self.mmaps.deinit();
+    self.buffers.deinit();
     for(self.moved_mmapped_files.items) |file| {
-      std.posix.unlinkatZ(file.dir_fd, file.name, 0) catch {};
+      posix.unlinkatZ(file.dir_fd, file.name, 0) catch {};
       self.allocator.free(file.name);
     }
     self.moved_mmapped_files.deinit();
+    gio.g_main_context_unref(self.gio_async_ctx);
     self.clear_cache();
     self.copy_cache.deinit();
   }
@@ -600,35 +647,83 @@ pub const Editor = struct {
   }
 
   pub fn openZ(self: *Editor, path: [*:0]const u8, err_msg: ?*?[]u8) !*Buffer {
+    var err: ?*gio.GError = null;
+
     var frag: *Fragment = undefined;
     if(gio.g_uri_is_valid(path, gio.G_URI_FLAGS_NONE, null) != 0) {
       const file = gio.g_file_new_for_uri(path); // TODO: Mount admin:// locations
       defer gio.g_object_unref(file);
 
       var data: []u8 = undefined;
-      var err: ?*gio.GError = null;
       if(gio.g_file_load_contents(file, null, @ptrCast(&data.ptr), &data.len, null, &err) == 0) return handle_gio_error(err.?, self.allocator, err_msg);
       frag = try Fragment.create(self, .Glib, data);
 
     } else {
-      const fd = try std.posix.openZ(path, .{ .ACCMODE = .RDONLY }, 0);
-      var should_close_fd = true;
-      defer if(should_close_fd) std.posix.close(fd);
+      const fd = try posix.openZ(path, .{ .ACCMODE = .RDONLY }, 0);
+      defer posix.close(fd);
+      const stat = try posix.fstat(fd);
 
-      const size: usize = @intCast((try std.posix.fstat(fd)).size);
+      const size: usize = @intCast(stat.size);
       if(size <= self.max_load_size) {
         var data = try self.allocator.alloc(u8, size);
-        data.len = try std.posix.read(fd, data);
+        data.len = try posix.read(fd, data);
         frag = try Fragment.create(self, .Allocator, data);
 
       } else {
-        frag = try Fragment.create(self, .Mmap, try std.posix.mmap(null, size, std.posix.PROT.READ, .{ .TYPE = .PRIVATE }, fd, 0));
-        frag.fd = fd;
-        should_close_fd = false;
+        frag = try Fragment.create(self, .Mmap, try posix.mmap(null, size, posix.PROT.READ, .{ .TYPE = .PRIVATE }, fd, 0));
+        frag.st_dev = stat.dev;
+        frag.st_ino = stat.ino;
+
+        const file = gio.g_file_new_for_path(path);
+        defer gio.g_object_unref(file);
+
+        gio.g_main_context_push_thread_default(self.gio_async_ctx);
+        defer gio.g_main_context_pop_thread_default(self.gio_async_ctx);
+        frag.file_monitor = gio.g_file_monitor_file(file, gio.G_FILE_MONITOR_WATCH_HARD_LINKS, null, &err) orelse {
+          return handle_gio_error(err.?, self.allocator, err_msg);
+        };
+        const user_data = try self.allocator.create(GioCallbackUserData);
+        user_data.* = .{
+          .self = self,
+          .mmap = frag,
+        };
+        _ = gio.g_signal_connect_data(frag.file_monitor, "changed", @ptrCast(&gio_file_monitor_callback), user_data, @ptrCast(&gio_destroy_user_data), gio.G_CONNECT_DEFAULT);
       }
     }
 
     return Buffer.create(self, try Node.create(self, frag, 0, frag.data.len));
+  }
+
+  pub fn check_fs_events(self: *Editor) void {
+    _ = gio.g_main_context_iteration(self.gio_async_ctx, 0);
+  }
+
+  const GioCallbackUserData = struct {
+    self: *Editor,
+    mmap: *Fragment,
+  };
+  fn gio_file_monitor_callback(_: *gio.GFileMonitor, _: *gio.GFile, _: *gio.GFile, event: gio.GFileMonitorEvent, user_data: *GioCallbackUserData) callconv(.C) void {
+    if(event != gio.G_FILE_MONITOR_EVENT_CHANGED) return; // We don't have to check for deletion since the mmap keeps the file contents alive.
+    const self = user_data.self;
+    const mmap = user_data.mmap;
+
+    if(mmap.file_monitor) |file_monitor| {
+      mmap.file_monitor = null;
+      gio.g_object_unref(file_monitor);
+
+      // It would be nice if we could map zeros only over the unloaded pages.
+      mmap.is_corrupt = true;
+      mmap.data = posix.mmap(@alignCast(mmap.data.ptr), mmap.data.len, posix.PROT.READ, .{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0) catch unreachable;
+      for(self.buffers.items) |buffer| {
+        if(buffer.root) |root| {
+          root.update_stats(true);
+        }
+      }
+    }
+  }
+
+  fn gio_destroy_user_data(user_data: *GioCallbackUserData, _: *gio.GClosure) callconv(.C) void {
+    user_data.self.allocator.destroy(user_data);
   }
 };
 
@@ -638,7 +733,7 @@ pub const Editor = struct {
 // POSIX errors, so to obtain this mapping I just had to search for the Glib
 // error in its source code and then search for the corresponding POSIX error
 // in std.posix's source code.
-fn handle_gio_error(err: *gio.GError, allocator: std.mem.Allocator, msg: ?*?[]u8) anyerror {
+fn handle_gio_error(err: *gio.GError, allocator: Allocator, msg: ?*?[]u8) anyerror {
   defer gio.g_error_free(err);
   if(msg) |x| {
     x.* = allocator.dupe(u8, std.mem.span(err.message)) catch null;

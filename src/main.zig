@@ -92,7 +92,7 @@ pub fn main() !void {
     //try buffer.insert(28, "- Wyłącz komputer i pójdź do psychologa.\n");
     //try buffer.delete(73, 1274);
 
-    var buf: [1024]u8 = undefined;
+    var buf: [1000]u8 = undefined;
     const data = buf[0 .. try buffer.read(0, &buf)];
     for(data) |*x| {
       x.* = if(std.ascii.isLower(x.*)) std.ascii.toUpper(x.*) else std.ascii.toLower(x.*);
@@ -102,6 +102,11 @@ pub fn main() !void {
 
     try buffer.copy(200, buffer, 0, 100);
     try buffer.delete(0, 100);
+
+    const start = std.time.timestamp();
+    while(std.time.timestamp() - start <= 10) {
+      editor.check_fs_events();
+    }
 
     buffer.save(args[2], &err_msg) catch |err| {
       if(err_msg) |x| {
