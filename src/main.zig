@@ -75,6 +75,7 @@ pub fn main() !void {
 
   {
     var editor = Editor.init(gpa.allocator());
+    editor.max_load_size = 0;
     defer editor.deinit();
 
     var err_msg: ?[]u8 = null;
@@ -102,6 +103,8 @@ pub fn main() !void {
 
     try buffer.copy(200, buffer, 0, 100);
     try buffer.delete(0, 100);
+
+    try buffer.load();
 
     const start = std.time.timestamp();
     while(std.time.timestamp() - start <= 10) {

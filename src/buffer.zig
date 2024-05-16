@@ -25,7 +25,6 @@ const posix = std.posix;
 // TODO: do we need an insert stack?
 // TODO: converting between byte offests and line/cols
 // TODO: buffer diffs
-// TODO: force load mmaps
 
 // Some methods have an optional "err_msg" parameter, which on failure, may be
 // set to an error message from GIO. The caller is reponsible for freeing
@@ -87,6 +86,27 @@ const Fragment = struct {
       },
     }
     editor.allocator.destroy(self);
+  }
+
+  fn load(self: *Fragment, editor: *Editor) Allocator.Error!void {
+    if(self.owner != .Mmap or self.is_corrupt) return;
+
+    const data = self.data;
+    posix.madvise(@alignCast(data.ptr), data.len, posix.MADV.SEQUENTIAL) catch {};
+    self.data = try editor.allocator.dupe(u8, data);
+    self.owner = .Allocator;
+
+    posix.munmap(@alignCast(data));
+    if(self.file_monitor) |x| {
+      gio.g_object_unref(x);
+    }
+    _ = editor.mmaps.swapRemove(std.mem.indexOfScalar(*Fragment, editor.mmaps.items, self).?);
+
+    for(editor.buffers.items) |buffer| {
+      if(buffer.root) |root| {
+        root.update_stats(true);
+      }
+    }
   }
 };
 
@@ -169,6 +189,16 @@ const Node = struct {
     return copy;
   }
 
+  fn load(self: *Node, editor: *Editor) Allocator.Error!void {
+    try self.frag.ptr.load(editor);
+    if(self.left) |x| {
+      try x.load(editor);
+    }
+    if(self.right) |x| {
+      try x.load(editor);
+    }
+  }
+
   fn set_left(self: *Node, editor: *Editor, value: ?*Node) void {
     std.debug.assert(!self.is_frozen);
     if(self.left == value) return;
@@ -221,6 +251,55 @@ const Node = struct {
       if(x.stats.has_corrupt_mmap) {
         self.stats.has_corrupt_mmap = true;
       }
+    }
+  }
+
+  fn read(self: *Node, offset_: usize, dest: []u8) !usize {
+    var offset = offset_;
+    if(offset > self.stats.bytes) return error.OutOfBounds;
+    if(dest.len <= 0) {
+      return 0;
+    }
+
+    var readc: usize = 0;
+
+    if(self.left) |left| {
+      if(offset < left.stats.bytes) {
+        readc += try left.read(offset, dest);
+        offset = 0;
+      } else {
+        offset -= left.stats.bytes;
+      }
+    }
+
+    const data = self.frag.ptr.data[self.frag.start .. self.frag.end];
+    if(offset < data.len) {
+      const data_slice = data[offset .. @min(offset + dest.len - readc, data.len)];
+      std.mem.copyForwards(u8, dest[readc ..], data_slice);
+      readc += data_slice.len;
+      offset = 0;
+    } else {
+      offset -= data.len;
+    }
+
+    if(self.right) |right| {
+      readc += try right.read(offset, dest[readc ..]);
+    }
+
+    return readc;
+  }
+
+  fn save(self: *Node, editor: *Editor, output: *gio.GOutputStream, err_msg: ?*?[]u8) !void {
+    if(self.left) |x| {
+      try x.save(editor, output, err_msg);
+    }
+
+    const data = self.frag.ptr.data[self.frag.start .. self.frag.end];
+    var err: ?*gio.GError = null;
+    if(gio.g_output_stream_write_all(output, data.ptr, data.len, null, null, &err) == 0) return handle_gio_error(err.?, editor.allocator, err_msg);
+
+    if(self.right) |x| {
+      try x.save(editor, output, err_msg);
     }
   }
 
@@ -286,55 +365,6 @@ const Node = struct {
     return if(offset == 0) .{self.ref(), null} else error.OutOfBounds;
   }
 
-  fn read(self: *Node, offset_: usize, dest: []u8) !usize {
-    var offset = offset_;
-    if(offset > self.stats.bytes) return error.OutOfBounds;
-    if(dest.len <= 0) {
-      return 0;
-    }
-
-    var readc: usize = 0;
-
-    if(self.left) |left| {
-      if(offset < left.stats.bytes) {
-        readc += try left.read(offset, dest);
-        offset = 0;
-      } else {
-        offset -= left.stats.bytes;
-      }
-    }
-
-    const data = self.frag.ptr.data[self.frag.start .. self.frag.end];
-    if(offset < data.len) {
-      const data_slice = data[offset .. @min(offset + dest.len - readc, data.len)];
-      std.mem.copyForwards(u8, dest[readc ..], data_slice);
-      readc += data_slice.len;
-      offset = 0;
-    } else {
-      offset -= data.len;
-    }
-
-    if(self.right) |right| {
-      readc += try right.read(offset, dest[readc ..]);
-    }
-
-    return readc;
-  }
-
-  fn save(self: *Node, editor: *Editor, output: *gio.GOutputStream, err_msg: ?*?[]u8) !void {
-    if(self.left) |x| {
-      try x.save(editor, output, err_msg);
-    }
-
-    const data = self.frag.ptr.data[self.frag.start .. self.frag.end];
-    var err: ?*gio.GError = null;
-    if(gio.g_output_stream_write_all(output, data.ptr, data.len, null, null, &err) == 0) return handle_gio_error(err.?, editor.allocator, err_msg);
-
-    if(self.right) |x| {
-      try x.save(editor, output, err_msg);
-    }
-  }
-
   fn debug(self: *Node) void {
     std.debug.print("node {} {} {}\n", .{self.priority, self.frag.end - self.frag.start, self.stats.bytes});
     if(self.left) |x| {
@@ -384,6 +414,12 @@ pub const Buffer = struct {
 
   pub fn melt(self: *Buffer) Allocator.Error!*Buffer {
     return if(self.is_frozen) Buffer.create(self.editor, self.root) else self;
+  }
+
+  pub fn load(self: *Buffer) Allocator.Error!void {
+    if(self.root) |x| {
+      try x.load(self.editor);
+    }
   }
 
   pub fn read(self: *Buffer, offset: usize, dest: []u8) !usize {
@@ -691,7 +727,12 @@ pub const Editor = struct {
       }
     }
 
-    return Buffer.create(self, try Node.create(self, frag, 0, frag.data.len));
+    if(frag.data.len > 0) {
+      return Buffer.create(self, try Node.create(self, frag, 0, frag.data.len));
+    } else {
+      frag.ref().unref(self);
+      return Buffer.create(self, null);
+    }
   }
 
   pub fn check_fs_events(self: *Editor) void {
@@ -711,7 +752,9 @@ pub const Editor = struct {
       mmap.file_monitor = null;
       gio.g_object_unref(file_monitor);
 
-      // It would be nice if we could map zeros only over the unloaded pages.
+      // Unfortunately, when the backing file is modified, the whole mmapped
+      // range is trashed, so we can't zero out only the unloaded pages.
+      // (I've tried.)
       mmap.is_corrupt = true;
       mmap.data = posix.mmap(@alignCast(mmap.data.ptr), mmap.data.len, posix.PROT.READ, .{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0) catch unreachable;
       for(self.buffers.items) |buffer| {
