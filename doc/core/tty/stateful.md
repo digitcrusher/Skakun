@@ -33,7 +33,7 @@ application doesn't brick your terminal.
 
 Uses various means (terminfo, XTGETTCAP, other escape sequences, GNOME
 Terminal/Konsole/Xfce Terminal/xterm's version environment variable, crystal
-ball reading) to automatically detect what the terminal can and cannot do (eg.
+ball reading) to automatically detect what the terminal can and cannot do (e.g.
 true-color RGB), and populates the `cap` table accordingly. This function
 respects the [`NO_COLOR` convention](https://no-color.org/).
 
@@ -44,7 +44,7 @@ which includes all of the text and screen attributes functions.
 
     cap
 
-The table of the current terminal's capabilities, ie. it contains an entry for
+The table of the current terminal's capabilities, i.e. it contains an entry for
 every text and screen attribute. Color caps are `'true_color'`, `'ansi'` or
 `false`, everything else is `true` or `false`. You may modify this table and
 call `load_functions`, if the automatic capability detection contraption fails

@@ -47,4 +47,62 @@ function utils.hex_decode(hex)
   return string
 end
 
+local alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+local encode_map, decode_map = {}, {}
+for i = 1, #alphabet do
+  encode_map[i - 1] = alphabet:sub(i, i)
+  decode_map[alphabet:byte(i, i)] = i - 1
+end
+
+function utils.base64_encode(string)
+  local base64 = ''
+
+  local i = 1
+  while i + 2 <= #string do
+    local a, b, c = string:byte(i, i + 2)
+    base64 = base64 .. encode_map[math.floor(a / 4)] .. encode_map[a % 4 * 16 + math.floor(b / 16)] .. encode_map[b % 16 * 4 + math.floor(c / 64)] .. encode_map[c % 64]
+    i = i + 3
+  end
+
+  local a, b = string:byte(i, i + 1)
+  if b then
+    base64 = base64 .. encode_map[math.floor(a / 4)] .. encode_map[a % 4 * 16 + math.floor(b / 16)] .. encode_map[b % 16 * 4] .. '='
+  elseif a then
+    base64 = base64 .. encode_map[math.floor(a / 4)] .. encode_map[a % 4 * 16] .. '=='
+  end
+
+  return base64
+end
+
+function utils.base64_decode(base64)
+  local string = ''
+
+  local len
+  if base64:sub(-2, -2) == '=' then
+    len = #base64 - 2
+  elseif base64:sub(-1, -1) == '=' then
+    len = #base64 - 1
+  else
+    len = #base64
+  end
+
+  local i = 1
+  while i + 3 <= len do
+    local a, b, c, d = base64:byte(i, i + 3)
+    a, b, c, d = decode_map[a], decode_map[b], decode_map[c], decode_map[d]
+    string = string .. string.char(a * 4 + b / 16) .. string.char(b % 16 * 16 + c / 4) .. string.char(c % 4 * 64 + d)
+    i = i + 4
+  end
+
+  local a, b, c = base64:byte(i, i + 2)
+  a, b, c = decode_map[a], decode_map[b], decode_map[c]
+  if c then
+    string = string .. string.char(a * 4 + b / 16) .. string.char(b % 16 * 16 + c / 4)
+  elseif b then
+    string = string .. string.char(a * 4 + b / 16)
+  end
+
+  return string
+end
+
 return utils

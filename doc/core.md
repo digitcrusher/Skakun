@@ -4,7 +4,7 @@ This namespace is wholly populated by the bootstrap program.
 
     version
 
-Skakun's version string, eg. `'1.2.3-dirty+22552eb`.
+Skakun's version string, e.g. `'1.2.3-dirty+22552eb`.
 
     exe_dir
 

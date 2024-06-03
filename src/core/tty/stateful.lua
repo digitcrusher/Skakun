@@ -105,27 +105,39 @@ local tty = {
     mouse_shape = true,
     window_title = true,
     window_background = 'true_color',
+    clipboard = true,
   },
 
   state = {},
+  input_buf = '',
 }
 setmetatable(tty, { __index = require('core.tty.system') })
 
 function tty.setup()
+  tty.open()
   tty.enable_raw_mode()
   tty.detect_caps()
   tty.load_functions()
   tty.write('\27[?1049h') -- Switch to the alternate terminal screen
   tty.write('\27[?2004h') -- Enable bracketed paste
+  tty.write('\27=') -- Discriminate numpad keys (Linux console)
+  -- tty.write('\27[?1000h') -- Enable mouse button events
+  -- tty.write('\27[?1003h') -- Enable mouse movement events
+  -- tty.write('\27[?1006h') -- Extend the range of mouse coordinates the terminal is able to report
   tty.write('\27]22;>default\27\\', '\27]22;\27\\') -- Push the terminal default onto the pointer shape stack
 end
 
 function tty.restore()
   tty.reset() -- TODO: save the text attributes from before
-  tty.write('\27[?1049l') -- Switch back to the primary terminal screen
-  tty.write('\27[?2004l') -- Disable bracketed paste
   tty.write('\27]22;<\27\\') -- Pop our pointer shape from the stack
+  -- tty.write('\27[?1006l') -- Shrink the range of mouse coordinates to default
+  -- tty.write('\27[?1003l') -- Disable mouse movement events
+  -- tty.write('\27[?1000l') -- Disable mouse button events
+  tty.write('\27>') -- Don't discriminate numpad keys (Linux console)
+  tty.write('\27[?2004l') -- Disable bracketed paste
+  tty.write('\27[?1049l') -- Switch back to the primary terminal screen
   tty.disable_raw_mode()
+  tty.close()
 end
 
 function tty.detect_caps()
@@ -133,7 +145,7 @@ function tty.detect_caps()
   -- https://github.com/kovidgoyal/kitty/blob/master/kitty/terminfo.py
   -- VTE's commit history: https://gitlab.gnome.org/GNOME/vte/-/commits/master
   -- Konsole's commit history: https://invent.kde.org/utilities/konsole/-/commits/master
-  -- …Which, geez, a pain to follow it was.
+  -- …which, geez, a pain to follow it was.
   -- xterm's changelog: https://invisible-island.net/xterm/xterm.log.html
   local vte = tonumber(os.getenv('VTE_VERSION')) or -1 -- VTE 0.34.5 (8bea17d1, 68046665)
   local konsole = tonumber(os.getenv('KONSOLE_VERSION')) or -1 -- Konsole 18.07.80 (b0d3d83e, 7e040b61)
@@ -148,14 +160,14 @@ function tty.detect_caps()
   -- system-wide database and query the terminal's own terminfo entry. It's
   -- supported by… a *few* terminals. :/
   -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Device-Control-functions
-  tty.read()
   tty.write('\27P+q', utils.hex_encode('cr'), '\27\\') -- An example query for "cr"
+  tty.read_events()
   tty.flush()
   if tty.read():match('^\27P[01]%+r.*\27\\$') then -- The terminal has replied with a well-formed answer.
     -- Flags don't work over XTGETTCAP, in kitty at least.
     function tty.getnum(capname)
-      tty.read()
       tty.write('\27P+q', utils.hex_encode(capname), '\27\\')
+      tty.read_events()
       tty.flush()
       local result = tty.read():match('^\27P1%+r.*=(%x*)\27\\$')
       if result then
@@ -165,8 +177,8 @@ function tty.detect_caps()
     end
 
     function tty.getstr(capname)
-      tty.read()
       tty.write('\27P+q', utils.hex_encode(capname), '\27\\')
+      tty.read_events()
       tty.flush()
       local result = tty.read():match('^\27P1%+r.*=(%x*)\27\\$')
       if result then
@@ -251,8 +263,8 @@ function tty.detect_caps()
   end
 
   -- Reference: https://sw.kovidgoyal.net/kitty/pointer-shapes/#querying-support
-  tty.read()
   tty.write('\27]22;?__current__\27\\')
+  tty.read_events()
   tty.flush()
   -- Kitty sends out a colon, even though its own docs say there should be
   -- a semicolon there???
@@ -277,8 +289,8 @@ function tty.detect_caps()
     -- …But we can ask the terminal to send us the current background color and
     -- see if it understands us.
     -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Operating-System-Commands
-    tty.read()
     tty.write('\27]11;?\27\\')
+    tty.read_events()
     tty.flush()
     -- Konsole and st send BEL instead of ST at the end for some reason.
     if tty.read():match('^\27]11;(.*)\27?\\?\7?$') then
@@ -286,6 +298,13 @@ function tty.detect_caps()
     else
       tty.cap.window_background = false
     end
+  end
+
+  -- You may have to explicitly enable this: https://github.com/tmux/tmux/wiki/Clipboard
+  if xterm >= 238 or tty.getstr('Ms') then
+    tty.cap.clipboard = true
+  else
+    tty.cap.clipboard = false
   end
 
   -- Further reading: https://no-color.org/
@@ -498,8 +517,8 @@ function tty.load_functions()
           bright_cyan = 14,
           bright_white = 15,
         }
-        tty.read()
         tty.write('\27]4;', ansi_color_codes[red], ';?\27\\')
+        tty.read_events()
         tty.flush()
         -- Konsole and st send BEL instead of ST at the end for some reason.
         -- Fun fact: We can and may send RGB colors to the terminal in two
@@ -655,8 +674,8 @@ function tty.load_functions()
           bright_cyan = 14,
           bright_white = 15,
         }
-        tty.read()
         tty.write('\27]4;', ansi_color_codes[red], ';?\27\\')
+        tty.read_events()
         tty.flush()
         -- Konsole and st send BEL instead of ST at the end for some reason.
         tty.write('\27]11;', tty.read():match('^\27]4;%d*;(.*)\27?\\?\7?$'), '\27\\')
@@ -667,6 +686,19 @@ function tty.load_functions()
   else
     function tty.set_window_background() end
   end
+
+  if tty.cap.clipboard then
+    function tty.set_clipboard(text)
+      -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Operating-System-Commands
+      tty.write('\27]52;c;', utils.base64_encode(text), '\27\\')
+    end
+  else
+    function tty.set_clipboard() end
+  end
+end
+
+function tty.read_events()
+  tty.input_buf = tty.input_buf .. tty.read()
 end
 
 return tty

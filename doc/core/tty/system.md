@@ -61,7 +61,7 @@ up-to-date and sadly there's no better widespread way to query the terminal's
 capabilities. To give you a sense of the common problems around terminfo, on my
 Debian machine xterm sets `$TERM` to `xterm` instead of `xterm-256color` and
 that stops terminfo from knowing that my terminal has the `initc` capability,
-ie. it has a configurable palette of 256 24-bit RGB colors.
+i.e. it has a configurable palette of 256 24-bit RGB colors.
 
 However, there is a light of hope called "XTGETTCAP", which is a terminfo query
 as an escape sequence sent directly to the terminal, and not to some outdated

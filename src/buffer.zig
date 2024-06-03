@@ -20,6 +20,7 @@ const gio = @cImport({
   @cInclude("gio/gunixoutputstream.h");
 });
 const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
 const posix = std.posix;
 
 // TODO: do we need an insert stack?
@@ -131,7 +132,7 @@ const Node = struct {
   stats: Stats,
 
   fn create(editor: *Editor, frag: *Fragment, start: usize, end: usize) Allocator.Error!*Node {
-    std.debug.assert(start < end and end <= frag.data.len);
+    assert(start < end and end <= frag.data.len);
     const self = try editor.allocator.create(Node);
     self.* = .{
       .frag = .{
@@ -200,7 +201,7 @@ const Node = struct {
   }
 
   fn set_left(self: *Node, editor: *Editor, value: ?*Node) void {
-    std.debug.assert(!self.is_frozen);
+    assert(!self.is_frozen);
     if(self.left == value) return;
     if(self.left) |x| {
       x.unref(editor);
@@ -209,7 +210,7 @@ const Node = struct {
   }
 
   fn set_right(self: *Node, editor: *Editor, value: ?*Node) void {
-    std.debug.assert(!self.is_frozen);
+    assert(!self.is_frozen);
     if(self.right == value) return;
     if(self.right) |x| {
       x.unref(editor);
@@ -576,7 +577,7 @@ pub const Buffer = struct {
   }
 
   pub fn copy(self: *Buffer, offset: usize, src: *Buffer, start: usize, end: usize) !void {
-    std.debug.assert(self.editor == src.editor);
+    assert(self.editor == src.editor);
     if(self.is_frozen) return error.BufferFrozen;
     if(start >= end) return;
     if(src.root == null) return error.OutOfBounds;

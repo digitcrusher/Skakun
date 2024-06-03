@@ -56,7 +56,7 @@ pub fn main() !void {
 
   var gpa = std.heap.GeneralPurposeAllocator(.{}){};
   defer _ = gpa.deinit();
-  const allocator = gpa.allocator();
+  var allocator = gpa.allocator();
 
   const args = try std.process.argsAlloc(allocator);
   defer std.process.argsFree(allocator, args);
@@ -73,7 +73,7 @@ pub fn main() !void {
     return;
   }
 
-  {
+  if(false) {
     var editor = Editor.init(gpa.allocator());
     editor.max_load_size = 0;
     defer editor.deinit();
@@ -124,10 +124,13 @@ pub fn main() !void {
 
   _ = gpa.detectLeaks();
 
-  if(false) {
+  if(true) {
   const vm = lua.luaL_newstate() orelse return error.OutOfMemory;
   defer lua.lua_close(vm);
   lua.luaL_openlibs(vm);
+
+  lua.lua_pushlightuserdata(vm, @ptrCast(&allocator));
+  lua.lua_setfield(vm, lua.LUA_REGISTRYINDEX, "*std.mem.Allocator");
 
   // I suspect this code may work only in Lua 5.1…
   lua.lua_getfield(vm, lua.LUA_REGISTRYINDEX, "_LOADED"); // Push _LOADED (the table of loaded modules) onto the stack

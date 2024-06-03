@@ -3,6 +3,8 @@ local utils = require('core.utils')
 
 utils.lock_globals()
 tty.setup()
+function tty.set_window_background() end
+tty.cap.window_background = false
 tty.clear()
 tty.set_cursor(false)
 
@@ -155,13 +157,15 @@ tty.set_italic()
 tty.write(' to quit.\r\n')
 
 for i = 1, math.huge do
-  local x = tty.read()
-  if x == '' then
-    tty.write('.')
-  else
-    tty.write((x:gsub('\\', '\\\\'):gsub('\27', '\\27'):gsub('\7', '\\7')))
+  tty.read_events()
+  local x = tty.input_buf
+  if tty.input_buf == '\27' then break end
+  x = x:gsub('\\', '\\\\')
+  for i = 1, 31 do
+    x = x:gsub(string.char(i), '\\' .. i)
   end
-  if x == '\27' then break end
+  tty.write(x)
+  tty.input_buf = ''
   tty.set_cursor_shape(tty.cursor_shapes[i % #tty.cursor_shapes + 1])
   tty.set_window_title('The time is: ' .. os.date())
   tty.flush()
