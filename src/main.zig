@@ -15,13 +15,10 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
-const builtin = @import("builtin");
+const target = @import("builtin").target;
 const build = @import("build");
 const Editor = @import("buffer.zig").Editor;
-const lua = @cImport({
-  @cInclude("lauxlib.h");
-  @cInclude("lualib.h");
-});
+const lua = @import("ziglua");
 
 const glyphs = [256]?[]const u8{
   "␀", "␁", "␂", "␃", "␄", "␅", "␆", "␇", "␈", "␉", "␊", "␋", "␌", "␍", "␎", "␏",
@@ -125,44 +122,40 @@ pub fn main() !void {
   _ = gpa.detectLeaks();
 
   if(true) {
-  const vm = lua.luaL_newstate() orelse return error.OutOfMemory;
-  defer lua.lua_close(vm);
-  lua.luaL_openlibs(vm);
+  const vm = try lua.Lua.init(&allocator);
+  defer vm.deinit();
+  vm.openLibs();
 
-  lua.lua_pushlightuserdata(vm, @ptrCast(&allocator));
-  lua.lua_setfield(vm, lua.LUA_REGISTRYINDEX, "*std.mem.Allocator");
+  try vm.getSubtable(lua.registry_index, "_LOADED");
+  vm.getSubtable(-1, "core") catch {};
 
-  // I suspect this code may work only in Lua 5.1…
-  lua.lua_getfield(vm, lua.LUA_REGISTRYINDEX, "_LOADED"); // Push _LOADED (the table of loaded modules) onto the stack
-  lua.lua_newtable(vm); // Create a new table for our runtime variables and push it
-
-  lua.lua_pushlstring(vm, build.version.ptr, build.version.len);
-  lua.lua_setfield(vm, -2, "version");
+  _ = vm.pushString(build.version);
+  vm.setField(-2, "version");
 
   const exe_dir = try std.fs.selfExeDirPathAlloc(allocator);
   defer allocator.free(exe_dir);
-  lua.lua_pushlstring(vm, exe_dir.ptr, exe_dir.len);
-  lua.lua_setfield(vm, -2, "exe_dir");
+  _ = vm.pushString(exe_dir);
+  vm.setField(-2, "exe_dir");
 
-  lua.lua_setfield(vm, -2, "core"); // Set _LOADED['core'] to our table and pop it
-  lua.lua_pop(vm, 1); // Pop _LOADED
+  vm.requireF("core.tty.system", lua.wrap(@import("core/tty/system.zig").luaopen), false);
+  if(target.os.tag == .linux or target.isBSD()) {
+    vm.requireF("core.tty.unix.vt", lua.wrap(@import("core/tty/unix/vt.zig").luaopen), false);
+  }
 
-  try @import("core/tty/system.zig").register(vm);
-
-  if(lua.luaL_dostring(
-    vm,
+  try vm.doString(
+    \\local core = require('core')
+    \\function core.cleanup() end
     \\xpcall(
     \\  function()
-    \\    local core = require('core')
     ++
-    if(builtin.target.isDarwin())
+    if(target.isDarwin())
       \\  -- There's also $HOME/Library/Preferences for Apple's proprietary
       \\  -- configuration file format ".plist".
       \\  core.config_dir = os.getenv('HOME') .. '/Library/Application Support/Skakun'
-    else if(builtin.target.os.tag == .windows)
+    else if(target.os.tag == .windows)
       \\  -- %APPDATA% differs from %LOCALAPPDATA% in that it is synced
       \\  -- across devices.
-      \\  core.config_dir = os.getenv('APPDATA') .. '/Skakun'
+      \\  core.config_dir = os.getenv('APPDATA') .. '\Skakun'
     else
       \\  core.config_dir = os.getenv('XDG_CONFIG_HOME')
       \\  if core.config_dir then
@@ -178,13 +171,14 @@ pub fn main() !void {
     \\    package.path = core.config_dir .. '/?.lua;' .. package.path
     \\    package.cpath = core.config_dir .. '/?.so;' .. package.cpath
     \\    require('user')
+    \\    core.cleanup()
     \\  end,
     \\  function(err)
+    \\    pcall(core.cleanup)
     \\    print(debug.traceback(err, 2))
+    \\    os.exit(1)
     \\  end
     \\)
-  )) {
-    return error.LuaError;
-  }
+  );
   }
 }

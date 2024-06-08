@@ -15,43 +15,27 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
-const builtin = @import("builtin");
-// We sadly can't use luaL_checkstring and luaL_optstring because Zig errors out on them.
-const lua = @cImport({
-  @cInclude("lauxlib.h");
-  @cInclude("lualib.h");
-});
+const target = @import("builtin").target;
+const lua = @import("ziglua");
+const c = @cImport(@cInclude("termios.h"));
 const curses = @cImport({
   @cInclude("curses.h");
   @cInclude("term.h");
 });
-const c = @cImport({
-  @cInclude("termios.h");
-  if(builtin.target.isBSD()) {
-    @cInclude("sys/consio.h");
-    @cInclude("sys/kbio.h");
-  } else if(builtin.target.os.tag == .linux) {
-    @cInclude("linux/kd.h");
-    @cInclude("linux/vt.h");
-  }
-});
+const assert = std.debug.assert;
 const File = std.fs.File;
 const posix = std.posix;
 
-// man 2 ioctl_console
+pub var is_open = false;
+pub var file: if(target.os.tag == .windows) struct { in: File, out: File } else File = undefined;
+pub var reader: File.Reader = undefined;
+pub var writer: std.io.BufferedWriter(4096, File.Writer) = undefined;
 
-// The kbd project's source code was useful when writing this.
-
-var is_open = false;
-var file: if(builtin.target.os.tag == .windows) struct { in: File, out: File } else File = undefined;
-var reader: File.Reader = undefined;
-var writer: std.io.BufferedWriter(4096, File.Writer) = undefined;
-
-fn open(vm: *lua.lua_State) callconv(.C) c_int {
-  if(is_open) return lua.luaL_error(vm, "tty is already open");
+fn open(vm: *lua.Lua) i32  {
+  if(is_open) vm.raiseErrorStr("tty is already open", .{});
   // We get hold of the controlling terminal directly, because stdin and stdout
   // might have been redirected to pipes.
-  if(builtin.target.os.tag == .windows) {
+  if(target.os.tag == .windows) {
     // On Windows we have the special device files "CONIN$", "CONOUT$" and
     // "CON". "CON" combines both input from and output to the terminal, which
     // is what we want. Thanks to backwards compatibility with MS-DOS, such
@@ -97,10 +81,10 @@ fn open(vm: *lua.lua_State) callconv(.C) c_int {
     // - https://github.com/rprichard/win32-console-docs#console-handles-modern
     // - https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file
     // - https://learn.microsoft.com/en-us/sysinternals/downloads/winobj
-    file.in  = std.fs.cwd().openFile("\\\\.\\CONIN$",  .{ .mode = .read_only  }) catch |err| return lua.luaL_error(vm, "failed to open CONIN$: %s", @errorName(err).ptr);
+    file.in  = std.fs.cwd().openFile("\\\\.\\CONIN$",  .{ .mode = .read_only  }) catch |err| vm.raiseErrorStr("failed to open CONIN$: %s", .{@errorName(err).ptr});
     file.out = std.fs.cwd().openFile("\\\\.\\CONOUT$", .{ .mode = .write_only }) catch |err| {
       file.in.close();
-      return lua.luaL_error(vm, "failed to open CONOUT$: %s", @errorName(err).ptr);
+      vm.raiseErrorStr("failed to open CONOUT$: %s", .{@errorName(err).ptr});
     };
     // Yeah… uhh… it turns out CON can be opened with read or write access but not both…
     // Source: https://stackoverflow.com/questions/47534039/windows-console-handle-for-con-device#comment82036446_47534039
@@ -111,7 +95,7 @@ fn open(vm: *lua.lua_State) callconv(.C) c_int {
     // (unlike that other operating system):
     // - https://unix.stackexchange.com/q/60641
     // - https://tldp.org/HOWTO/Text-Terminal-HOWTO-7.html
-    file = std.fs.cwd().openFile("/dev/tty", .{ .mode = .read_write }) catch |err| return lua.luaL_error(vm, "failed to open /dev/tty: %s", @errorName(err).ptr);
+    file = std.fs.cwd().openFile("/dev/tty", .{ .mode = .read_write }) catch |err| vm.raiseErrorStr("failed to open /dev/tty: %s", .{@errorName(err).ptr});
     reader = file.reader();
     writer = std.io.bufferedWriter(file.writer());
   }
@@ -119,11 +103,11 @@ fn open(vm: *lua.lua_State) callconv(.C) c_int {
   return 0;
 }
 
-fn close(_: *lua.lua_State) callconv(.C) c_int {
+fn close(_: *lua.Lua) i32 {
   if(!is_open) return 0;
   is_open = false;
   writer.flush() catch {};
-  if(builtin.target.os.tag == .windows) {
+  if(target.os.tag == .windows) {
     file.in.close();
     file.out.close();
   } else {
@@ -132,159 +116,131 @@ fn close(_: *lua.lua_State) callconv(.C) c_int {
   return 0;
 }
 
-fn write(vm: *lua.lua_State) callconv(.C) c_int {
-  if(!is_open) return lua.luaL_error(vm, "tty is closed");
-  for(1 .. @intCast(lua.lua_gettop(vm) + 1)) |arg_idx| {
-    var string: []const u8 = undefined;
-    string.ptr = lua.luaL_checklstring(vm, @intCast(arg_idx), &string.len) orelse return lua.luaL_typerror(vm, @intCast(arg_idx), lua.lua_typename(vm, lua.LUA_TSTRING));
-    writer.writer().writeAll(string) catch |err| return lua.luaL_error(vm, "%s", @errorName(err).ptr);
+fn write(vm: *lua.Lua) i32  {
+  if(!is_open) vm.raiseErrorStr("tty is closed", .{});
+  for(1 .. @intCast(vm.getTop() + 1)) |arg_idx| {
+    writer.writer().writeAll(vm.checkString(@intCast(arg_idx))) catch |err| vm.raiseErrorStr("%s", .{@errorName(err).ptr});
   }
   return 0;
 }
 
-fn flush(vm: *lua.lua_State) callconv(.C) c_int {
-  if(!is_open) return lua.luaL_error(vm, "tty is closed");
-  writer.flush() catch |err| return lua.luaL_error(vm, "%s", @errorName(err).ptr);
+fn flush(vm: *lua.Lua) i32  {
+  if(!is_open) vm.raiseErrorStr("tty is closed", .{});
+  writer.flush() catch |err| vm.raiseErrorStr("%s", .{@errorName(err).ptr});
   return 0;
 }
 
-fn read(vm: *lua.lua_State) callconv(.C) c_int {
-  if(!is_open) return lua.luaL_error(vm, "tty is closed");
-
-  lua.lua_getfield(vm, lua.LUA_REGISTRYINDEX, "*std.mem.Allocator");
-  var allocator: *std.mem.Allocator = @alignCast(@ptrCast(lua.lua_touserdata(vm, -1) orelse unreachable));
-  lua.lua_pop(vm, 1);
-
-  const data = reader.readAllAlloc(allocator.*, 1_000_000) catch |err| return lua.luaL_error(vm, "%s", @errorName(err).ptr); // An arbitrary limit of 1MB
+fn read(vm: *lua.Lua) i32  {
+  if(!is_open) vm.raiseErrorStr("tty is closed", .{});
+  const allocator = vm.allocator();
+  const data = reader.readAllAlloc(allocator, 1_000_000) catch |err| vm.raiseErrorStr("%s", .{@errorName(err).ptr}); // An arbitrary limit of 1MB
   defer allocator.free(data);
-
-  lua.lua_pushlstring(vm, data.ptr, data.len);
+  _ = vm.pushString(data);
   return 1;
 }
 
 var original_termios: ?posix.termios = null;
-var original_kbmode: ?c_int = null; // The manpage incorrectly says this should be a long but does nicely inform us that we should rely on Linux's and FreeBSD's source code instead of it.
 
-fn enable_raw_mode(vm: *lua.lua_State) callconv(.C) c_int {
-  if(!is_open) return lua.luaL_error(vm, "tty is closed");
+fn enable_raw_mode(vm: *lua.Lua) i32  {
+  if(!is_open) vm.raiseErrorStr("tty is closed", .{});
+  if(original_termios != null) return 0;
 
-  if(original_termios == null) {
-    var termios = posix.tcgetattr(file.handle) catch |err| return lua.luaL_error(vm, "failed to get original termios: %s", @errorName(err).ptr);
-    original_termios = termios;
+  var termios = posix.tcgetattr(file.handle) catch |err| vm.raiseErrorStr("failed to get original termios: %s", .{@errorName(err).ptr});
+  original_termios = termios;
 
-    // Further reading:
-    // - https://viewsourcecode.org/snaptoken/kilo/02.enteringRawMode.html
-    // - man 3 cfmakeraw
-    c.cfmakeraw(@ptrCast(&termios));
-    termios.cc[@intFromEnum(posix.V.MIN)] = 0;
-    termios.cc[@intFromEnum(posix.V.TIME)] = 1; // Read timeout: 100ms
-    posix.tcsetattr(file.handle, .FLUSH, termios) catch |err| return lua.luaL_error(vm, "failed to set raw termios: %s", @errorName(err).ptr);
-  }
-
-  // if((builtin.target.isBSD() or builtin.target.os.tag == .linux) and original_kbmode == null) {
-  //   if(std.c.ioctl(file.handle, c.KDGKBMODE, &original_kbmode) == 0) {
-  //     if(std.c.ioctl(file.handle, c.KDSKBMODE, if(builtin.target.isBSD()) c.K_CODE else c.K_MEDIUMRAW) != 0) return lua.luaL_error(vm, );
-  //   }
-  // }
+  // Further reading:
+  // - https://viewsourcecode.org/snaptoken/kilo/02.enteringRawMode.html
+  // - man 3 cfmakeraw
+  c.cfmakeraw(@ptrCast(&termios));
+  termios.cc[@intFromEnum(posix.V.MIN)] = 0;
+  termios.cc[@intFromEnum(posix.V.TIME)] = 0;
+  posix.tcsetattr(file.handle, .FLUSH, termios) catch |err| vm.raiseErrorStr("failed to set raw termios: %s", .{@errorName(err).ptr});
 
   return 0;
 }
 
-fn disable_raw_mode(vm: *lua.lua_State) callconv(.C) c_int {
-  if(!is_open) return lua.luaL_error(vm, "tty is closed");
-
+fn disable_raw_mode(vm: *lua.Lua) i32  {
+  if(!is_open) vm.raiseErrorStr("tty is closed", .{});
   if(original_termios) |x| {
-    posix.tcsetattr(file.handle, .FLUSH, x) catch |err| return lua.luaL_error(vm, "failed to set original termios: %s", @errorName(err).ptr);
-    original_termios = null;
+    if(posix.tcsetattr(file.handle, .FLUSH, x)) |_| {
+      original_termios = null;
+    } else |_| {}
   }
-
-  // if(builtin.target.isBSD() or builtin.target.os.tag == .linux) {
-  //   if(original_kbmode) |x| {
-  //     if(std.os.linux.ioctl(file.handle, c.KDSKBMODE, original_kbmode) != 0) return lua.
-  //     original_kbmode = null;
-  //   }
-  // }
-
   return 0;
 }
 
-fn getflag(vm: *lua.lua_State) callconv(.C) c_int {
-  const capname = lua.luaL_checklstring(vm, 1, null) orelse return lua.luaL_typerror(vm, 1, lua.lua_typename(vm, lua.LUA_TSTRING));
-  const term = if(lua.lua_isnoneornil(vm, 2)) null else lua.luaL_checklstring(vm, 2, null) orelse return lua.luaL_typerror(vm, 2, lua.lua_typename(vm, lua.LUA_TSTRING));
+fn getflag(vm: *lua.Lua) i32  {
+  const capname = vm.checkString(1);
+  const term = if(vm.optString(2)) |x| x.ptr else null;
 
   const old = curses.cur_term;
-  std.debug.assert(curses.setupterm(term, 0, null) == curses.OK);
+  assert(curses.setupterm(term, 0, null) == curses.OK);
   defer {
-    std.debug.assert(curses.del_curterm(curses.cur_term) == curses.OK);
+    assert(curses.del_curterm(curses.cur_term) == curses.OK);
     _ = curses.set_curterm(old);
   }
 
   switch(curses.tigetflag(capname)) {
-    -1 => lua.lua_pushnil(vm),
-    0 => lua.lua_pushboolean(vm, 0),
-    else => lua.lua_pushboolean(vm, 1),
+    -1 => vm.pushNil(),
+    0 => vm.pushBoolean(false),
+    else => vm.pushBoolean(true),
   }
   return 1;
 }
 
-fn getnum(vm: *lua.lua_State) callconv(.C) c_int {
-  const capname = lua.luaL_checklstring(vm, 1, null) orelse return lua.luaL_typerror(vm, 1, lua.lua_typename(vm, lua.LUA_TSTRING));
-  const term = if(lua.lua_isnoneornil(vm, 2)) null else lua.luaL_checklstring(vm, 2, null) orelse return lua.luaL_typerror(vm, 2, lua.lua_typename(vm, lua.LUA_TSTRING));
+fn getnum(vm: *lua.Lua) i32  {
+  const capname = vm.checkString(1);
+  const term = if(vm.optString(2)) |x| x.ptr else null;
 
   const old = curses.cur_term;
-  std.debug.assert(curses.setupterm(term, 0, null) == curses.OK);
+  assert(curses.setupterm(term, 0, null) == curses.OK);
   defer {
-    std.debug.assert(curses.del_curterm(curses.cur_term) == curses.OK);
+    assert(curses.del_curterm(curses.cur_term) == curses.OK);
     _ = curses.set_curterm(old);
   }
 
   switch(curses.tigetnum(capname)) {
-    -2 => lua.lua_pushnil(vm),
-    -1 => lua.lua_pushboolean(vm, 0),
-    else => |x| lua.lua_pushinteger(vm, x),
+    -2 => vm.pushNil(),
+    -1 => vm.pushBoolean(false),
+    else => |x| vm.pushInteger(x),
   }
   return 1;
 }
 
-fn getstr(vm: *lua.lua_State) callconv(.C) c_int {
-  const capname = lua.luaL_checklstring(vm, 1, null) orelse return lua.luaL_typerror(vm, 1, lua.lua_typename(vm, lua.LUA_TSTRING));
-  const term = if(lua.lua_isnoneornil(vm, 2)) null else lua.luaL_checklstring(vm, 2, null) orelse return lua.luaL_typerror(vm, 2, lua.lua_typename(vm, lua.LUA_TSTRING));
+fn getstr(vm: *lua.Lua) i32 {
+  const capname = vm.checkString(1);
+  const term = if(vm.optString(2)) |x| x.ptr else null;
 
   const old = curses.cur_term;
-  std.debug.assert(curses.setupterm(term, 0, null) == curses.OK);
+  assert(curses.setupterm(term, 0, null) == curses.OK);
   defer {
-    std.debug.assert(curses.del_curterm(curses.cur_term) == curses.OK);
+    assert(curses.del_curterm(curses.cur_term) == curses.OK);
     _ = curses.set_curterm(old);
   }
 
   const result = curses.tigetstr(capname);
   switch(@as(isize, @bitCast(@intFromPtr(result)))) {
-    -1 => lua.lua_pushnil(vm),
-    0 => lua.lua_pushboolean(vm, 0),
-    else => lua.lua_pushstring(vm, result),
+    -1 => vm.pushNil(),
+    0 => vm.pushBoolean(false),
+    else => _ = vm.pushString(std.mem.span(result)),
   }
   return 1;
 }
 
-// fn switch_console(vm: *lua.lua_State) callconv(.C) c_int {
-//   ioctl(fd, c.VT_ACTIVATE,
-//   return 0;
-// }
-
-const funcs = [_]lua.luaL_Reg{
-  .{ .name = "open", .func = @ptrCast(&open) },
-  .{ .name = "close", .func = @ptrCast(&close) },
-  .{ .name = "write", .func = @ptrCast(&write) },
-  .{ .name = "flush", .func = @ptrCast(&flush) },
-  .{ .name = "read", .func = @ptrCast(&read) },
-  .{ .name = "enable_raw_mode", .func = @ptrCast(&enable_raw_mode) },
-  .{ .name = "disable_raw_mode", .func = @ptrCast(&disable_raw_mode) },
-  .{ .name = "getflag", .func = @ptrCast(&getflag) },
-  .{ .name = "getnum", .func = @ptrCast(&getnum) },
-  .{ .name = "getstr", .func = @ptrCast(&getstr) },
-  .{ .name = null, .func = null },
+const funcs = [_]lua.FnReg{
+  .{ .name = "open", .func = lua.wrap(open) },
+  .{ .name = "close", .func = lua.wrap(close) },
+  .{ .name = "write", .func = lua.wrap(write) },
+  .{ .name = "flush", .func = lua.wrap(flush) },
+  .{ .name = "read", .func = lua.wrap(read) },
+  .{ .name = "enable_raw_mode", .func = lua.wrap(enable_raw_mode) },
+  .{ .name = "disable_raw_mode", .func = lua.wrap(disable_raw_mode) },
+  .{ .name = "getflag", .func = lua.wrap(getflag) },
+  .{ .name = "getnum", .func = lua.wrap(getnum) },
+  .{ .name = "getstr", .func = lua.wrap(getstr) },
 };
 
-pub fn register(vm: *lua.lua_State) !void {
-  lua.luaL_register(vm, "core.tty.system", &funcs);
+pub fn luaopen(vm: *lua.Lua) i32 {
+  vm.newLib(&funcs);
+  return 1;
 }

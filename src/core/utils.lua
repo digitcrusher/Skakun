@@ -60,15 +60,15 @@ function utils.base64_encode(string)
   local i = 1
   while i + 2 <= #string do
     local a, b, c = string:byte(i, i + 2)
-    base64 = base64 .. encode_map[math.floor(a / 4)] .. encode_map[a % 4 * 16 + math.floor(b / 16)] .. encode_map[b % 16 * 4 + math.floor(c / 64)] .. encode_map[c % 64]
+    base64 = base64 .. encode_map[a >> 2] .. encode_map[(a & 0x3) << 4 | b >> 4] .. encode_map[(b & 0xf) << 2 | c >> 6] .. encode_map[c & 0x3f]
     i = i + 3
   end
 
   local a, b = string:byte(i, i + 1)
   if b then
-    base64 = base64 .. encode_map[math.floor(a / 4)] .. encode_map[a % 4 * 16 + math.floor(b / 16)] .. encode_map[b % 16 * 4] .. '='
+    base64 = base64 .. encode_map[a >> 2] .. encode_map[(a & 0x3) << 4 | b >> 4] .. encode_map[(b & 0xf) << 2] .. '='
   elseif a then
-    base64 = base64 .. encode_map[math.floor(a / 4)] .. encode_map[a % 4 * 16] .. '=='
+    base64 = base64 .. encode_map[a >> 2] .. encode_map[(a & 0x3) << 4] .. '=='
   end
 
   return base64
@@ -90,16 +90,16 @@ function utils.base64_decode(base64)
   while i + 3 <= len do
     local a, b, c, d = base64:byte(i, i + 3)
     a, b, c, d = decode_map[a], decode_map[b], decode_map[c], decode_map[d]
-    string = string .. string.char(a * 4 + b / 16) .. string.char(b % 16 * 16 + c / 4) .. string.char(c % 4 * 64 + d)
+    string = string .. string.char(a << 2 | b >> 4) .. string.char((b & 0xf) << 4 | c >> 2) .. string.char((c & 0x3) << 6 | d)
     i = i + 4
   end
 
   local a, b, c = base64:byte(i, i + 2)
   a, b, c = decode_map[a], decode_map[b], decode_map[c]
   if c then
-    string = string .. string.char(a * 4 + b / 16) .. string.char(b % 16 * 16 + c / 4)
+    string = string .. string.char(a << 2 | b >> 4) .. string.char((b & 0xf) << 4 | c >> 2)
   elseif b then
-    string = string .. string.char(a * 4 + b / 16)
+    string = string .. string.char(a << 2 | b >> 4)
   end
 
   return string

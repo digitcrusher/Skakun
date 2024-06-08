@@ -11,9 +11,13 @@ pub fn build(b: *std.Build) void {
     .target = target,
     .optimize = optimize,
   });
+  exe.root_module.addImport("ziglua", b.dependency("ziglua", .{
+    .lang = .lua54,
+    .target = target,
+    .optimize = optimize,
+  }).module("ziglua"));
   exe.linkLibC();
   exe.linkSystemLibrary("gio-unix-2.0");
-  exe.linkSystemLibrary("lua-5.1");
   exe.linkSystemLibrary("tinfo");
 
   var version: []const u8 = undefined;
@@ -50,7 +54,7 @@ pub fn build(b: *std.Build) void {
   });
   b.installDirectory(.{
     .source_dir = b.path("doc"),
-    .install_dir = .{ .custom = "doc" },
+    .install_dir = .{ .custom = "doc/skakun" },
     .install_subdir = "",
   });
 

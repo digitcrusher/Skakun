@@ -320,13 +320,14 @@ function tty.clear()
   tty.write('\27[2J')
 end
 
-function tty.goto(x, y)
+function tty.move_to(x, y)
   tty.write('\27[', y, ';', x, 'H')
 end
 
 function tty.reset()
   tty.write('\27[0m')
   tty.set_hyperlink()
+  tty.set_cursor()
   tty.state = {}
 end
 

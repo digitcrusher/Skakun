@@ -2,14 +2,59 @@ local tty = require('core.tty')
 local utils = require('core.utils')
 
 utils.lock_globals()
-tty.setup()
-function tty.set_window_background() end
-tty.cap.window_background = false
-tty.clear()
-tty.set_cursor(false)
+tty.open()
+--tty.setup()
+--tty.clear()
+--tty.set_cursor(false)
+
+local unix = require('core.tty.unix')
+local keymap = unix.get_keymap()
+
+local types = {
+  [0] = 'KT_LATIN',
+  [1] = 'KT_FN',
+  [2] = 'KT_SPEC',
+  [3] = 'KT_PAD',
+  [4] = 'KT_DEAD',
+  [5] = 'KT_CONS',
+  [6] = 'KT_CUR',
+  [7] = 'KT_SHIFT',
+  [8] = 'KT_META',
+  [9] = 'KT_ASCII',
+  [10] = 'KT_LOCK',
+  [11] = 'KT_LETTER',
+  [12] = 'KT_SLOCK',
+  [13] = 'KT_DEAD2',
+  [14] = 'KT_BRL',
+}
+setmetatable(types, { __index = function() return '?' end })
+
+for keycode, action in pairs(keymap[2]) do
+  io.write(unix.keycodes[keycode] or keycode, ' \t-> ', types[math.floor(action / 256)], ':', action % 256, ' \t(', action, ')\n')
+end
+
+--[[
+unix.enable_raw_kbd()
+require('core').cleanup = function()
+  unix.disable_raw_kbd()
+  tty.restore()
+end
+local kbd = unix.Kbd.new()
+tty.move_to(1, 1)
+while true do
+  local keys = kbd:feed(tty.read())
+  for _, key in ipairs(keys) do
+    tty.write(tostring(key.is_release), ' ', tostring(kbd.keycodes[key.keycode]), ' ')
+  end
+  tty.flush()
+  if #keys > 0 and keys[1].keycode == 1 then break end
+end
+]]--
+
+--[[
 
 -- Everything
-tty.goto(40, 10)
+tty.move_to(40, 10)
 tty.set_foreground('black')
 tty.set_background(255, 0, 191)
 tty.set_bold(true)
@@ -21,7 +66,7 @@ tty.set_strikethrough(true)
 tty.set_hyperlink('https://example.com/')
 tty.write('czesc okej!!!')
 tty.reset()
-tty.goto(1, 1)
+tty.move_to(1, 1)
 
 -- True colors
 local function hue_color(hue)
@@ -172,3 +217,5 @@ for i = 1, math.huge do
 end
 
 tty.restore()
+
+]]--
