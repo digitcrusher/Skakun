@@ -6,7 +6,9 @@ A module for communicating with Linux's `vt` driver (and FreeBSD's too)
 
     disable_raw_kbd()
 
-    get_keymap()
+    get_keymap()[shift_final][keycode]
+
+    get_accentmap()[accent][codepoint]
 
     set_kbd_leds(caps_lock, num_lock, scroll_lock)
 

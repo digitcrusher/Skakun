@@ -137,9 +137,24 @@ pub fn main() !void {
   _ = vm.pushString(exe_dir);
   vm.setField(-2, "exe_dir");
 
+  if(target.os.tag == .linux) {
+    _ = vm.pushString("linux");
+  } else if(target.os.tag == .windows) {
+    _ = vm.pushString("windows");
+  } else if(target.isDarwin()) {
+    _ = vm.pushString("macos");
+  } else if(target.isBSD()) {
+    _ = vm.pushString("freebsd");
+  } else {
+    vm.pushNil();
+  }
+  vm.setField(-2, "platform");
+
   vm.requireF("core.tty.system", lua.wrap(@import("core/tty/system.zig").luaopen), false);
-  if(target.os.tag == .linux or target.isBSD()) {
-    vm.requireF("core.tty.unix.vt", lua.wrap(@import("core/tty/unix/vt.zig").luaopen), false);
+  if(target.os.tag == .linux) {
+    vm.requireF("core.tty.linux.system", lua.wrap(@import("core/tty/linux/system.zig").luaopen), false);
+  } else if(target.isBSD()) {
+    vm.requireF("core.tty.freebsd.system", lua.wrap(@import("core/tty/freebsd/system.zig").luaopen), false);
   }
 
   try vm.doString(
@@ -147,23 +162,22 @@ pub fn main() !void {
     \\function core.cleanup() end
     \\xpcall(
     \\  function()
-    ++
-    if(target.isDarwin())
-      \\  -- There's also $HOME/Library/Preferences for Apple's proprietary
-      \\  -- configuration file format ".plist".
-      \\  core.config_dir = os.getenv('HOME') .. '/Library/Application Support/Skakun'
-    else if(target.os.tag == .windows)
-      \\  -- %APPDATA% differs from %LOCALAPPDATA% in that it is synced
-      \\  -- across devices.
-      \\  core.config_dir = os.getenv('APPDATA') .. '\Skakun'
-    else
-      \\  core.config_dir = os.getenv('XDG_CONFIG_HOME')
-      \\  if core.config_dir then
-      \\    core.config_dir = core.config_dir .. '/skakun'
-      \\  else
-      \\    core.config_dir = os.getenv('HOME') .. '/.config/skakun'
-      \\  end
-    ++
+    \\    if core.platform == 'windows' then
+    \\      -- %APPDATA% differs from %LOCALAPPDATA% in that it is synced
+    \\      -- across devices.
+    \\      core.config_dir = os.getenv('APPDATA') .. '\\Skakun'
+    \\    elseif core.platform == 'macos' then
+    \\      -- There's also $HOME/Library/Preferences for Apple's proprietary
+    \\      -- configuration file format ".plist".
+    \\      core.config_dir = os.getenv('HOME') .. '/Library/Application Support/Skakun'
+    \\    else
+    \\      core.config_dir = os.getenv('XDG_CONFIG_HOME')
+    \\      if core.config_dir then
+    \\        core.config_dir = core.config_dir .. '/skakun'
+    \\      else
+    \\        core.config_dir = os.getenv('HOME') .. '/.config/skakun'
+    \\      end
+    \\    end
     \\    package.path = core.exe_dir .. '/../lib/skakun/?/init.lua;' .. package.path
     \\    package.path = core.exe_dir .. '/../lib/skakun/?.lua;' .. package.path
     \\    package.cpath = core.exe_dir .. '/../lib/skakun/?.so;' .. package.cpath

@@ -2,15 +2,17 @@ local tty = require('core.tty')
 local utils = require('core.utils')
 
 utils.lock_globals()
-tty.open()
---tty.setup()
+tty.setup()
 --tty.clear()
 --tty.set_cursor(false)
 
-local unix = require('core.tty.unix')
-local keymap = unix.get_keymap()
+local linux = require('core.tty.linux')
+require('core').cleanup = function()
+  linux.disable_raw_kbd()
+  tty.restore()
+end
 
-local types = {
+--[[local types = {
   [0] = 'KT_LATIN',
   [1] = 'KT_FN',
   [2] = 'KT_SPEC',
@@ -29,27 +31,25 @@ local types = {
 }
 setmetatable(types, { __index = function() return '?' end })
 
-for keycode, action in pairs(keymap[2]) do
-  io.write(unix.keycodes[keycode] or keycode, ' \t-> ', types[math.floor(action / 256)], ':', action % 256, ' \t(', action, ')\n')
-end
+for keycode, action in pairs(linux.get_keymap()[2]) do
+  io.write(linux.keycodes[keycode] or keycode, ' \t-> ', types[action >> 8], ':', action & 0xff, ' \t(', action, ')\n')
+end]]--
 
---[[
-unix.enable_raw_kbd()
-require('core').cleanup = function()
-  unix.disable_raw_kbd()
-  tty.restore()
-end
-local kbd = unix.Kbd.new()
-tty.move_to(1, 1)
+local kbd = linux.Kbd.new()
+linux.enable_raw_kbd()
 while true do
   local keys = kbd:feed(tty.read())
   for _, key in ipairs(keys) do
-    tty.write(tostring(key.is_release), ' ', tostring(kbd.keycodes[key.keycode]), ' ')
+    -- if key.text then
+    --   tty.write('(', key.type, ' ', key.keycode, ' ', key.text, ') ')
+    -- else
+    --   tty.write('(', key.type, ' ', key.keycode, ') ')
+    -- end
+    tty.write(key.text or '')
   end
   tty.flush()
-  if #keys > 0 and keys[1].keycode == 1 then break end
+  if #keys > 0 and keys[1].keycode == 'escape' then break end
 end
-]]--
 
 --[[
 

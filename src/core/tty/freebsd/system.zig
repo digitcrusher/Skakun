@@ -19,41 +19,22 @@ const target = @import("builtin").target;
 const lua = @import("ziglua");
 const c = @cImport({
   @cInclude("errno.h");
+  @cInclude("dev/evdev/input-event-codes.h");
   @cInclude("string.h");
-  if(target.isBSD()) {
-    @cInclude("dev/evdev/input-event-codes.h");
-    @cInclude("sys/consio.h");
-    @cInclude("sys/kbio.h");
-  } else if(target.os.tag == .linux) {
-    @cInclude("linux/input-event-codes.h");
-    @cInclude("linux/kd.h");
-    @cInclude("linux/keyboard.h");
-    @cInclude("linux/tiocl.h");
-    @cInclude("linux/vt.h");
-  }
+  @cInclude("sys/consio.h");
+  @cInclude("sys/kbio.h");
 });
 const tty = @import("../system.zig");
 
-// Linux Reference:
-// - man 2 ioctl_console (outdated)
-// - https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/include/uapi/linux/keyboard.h
-// - https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/include/uapi/linux/kd.h
-// - https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/include/uapi/linux/vt.h
-// - https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/include/uapi/linux/tiocl.h
-// - man 5 keymaps
-// - https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/tty/vt/keyboard.c
-// - https://git.kernel.org/pub/scm/linux/kernel/git/legion/kbd.git/tree/src/libkeymap/kernel.c
-//
-// FreeBSD reference:
-// - https://cgit.freebsd.org/src/tree/sys/sys/consio.h
+// Ioctl reference:
 // - https://cgit.freebsd.org/src/tree/sys/sys/kbio.h
-// - man 5 keymap
+// - https://cgit.freebsd.org/src/tree/sys/sys/consio.h
+//
+// Ioctl parameter type reference: https://cgit.freebsd.org/src/tree/sys/dev/vt/vt_core.c
 //
 // Here is a more or less reasonable explanation of the terminology surrounding
 // "virtual consoles" and "virtual terminals": https://unix.stackexchange.com/a/228052
 
-// The Linux manpage incorrectly says this should be a long, but does nicely
-// inform us that we should rely on the kernel source code instead of it.
 var original_kbmode: ?c_int = null;
 
 fn enable_raw_kbd(vm: *lua.Lua) i32 {
@@ -61,8 +42,8 @@ fn enable_raw_kbd(vm: *lua.Lua) i32 {
   if(original_kbmode != null) return 0;
   var kbmode: c_int = undefined;
   if(std.c.ioctl(tty.file.handle, c.KDGKBMODE, &kbmode) < 0) return 0;
-  const freebsd_is_wack: c_int = if(target.isBSD()) c.K_CODE else undefined;
-  if(std.c.ioctl(tty.file.handle, c.KDSKBMODE, if(target.isBSD()) &freebsd_is_wack else c.K_MEDIUMRAW) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+  const freebsd_is_wack: c_int = c.K_CODE;
+  if(std.c.ioctl(tty.file.handle, c.KDSKBMODE, &freebsd_is_wack) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
   original_kbmode = kbmode;
   vm.pushBoolean(true);
   return 1;
@@ -71,7 +52,7 @@ fn enable_raw_kbd(vm: *lua.Lua) i32 {
 fn disable_raw_kbd(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
   if(original_kbmode) |x| {
-    if(std.c.ioctl(tty.file.handle, c.KDSKBMODE, x) == 0) {
+    if(std.c.ioctl(tty.file.handle, c.KDSKBMODE, &x) == 0) {
       original_kbmode = null;
     }
   }
@@ -81,35 +62,26 @@ fn disable_raw_kbd(vm: *lua.Lua) i32 {
 fn get_keymap(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
 
-  vm.createTable(c.MAX_NR_KEYMAPS, 0);
-  for(0 .. c.MAX_NR_KEYMAPS) |modifiers| {
-    var intercom: c.kbentry = .{
-      .kb_table = @intCast(modifiers),
-      .kb_index = 0, // This has to be zero, otherwise Linux will return K_HOLE instead of K_NOSUCHMAP.
-      .kb_value = undefined,
-    };
-    if(std.c.ioctl(tty.file.handle, c.KDGKBENT, &intercom) < 0) vm.raiseErrorStr("%s at table %d, index %d", .{c.strerror(std.c._errno().*), intercom.kb_table, intercom.kb_index});
-    if(intercom.kb_value == c.K_NOSUCHMAP) continue;
+  var keymap: c.keymap = undefined;
+  if(std.c.ioctl(tty.file.handle, c.GIO_KEYMAP, &keymap) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
 
-    vm.createTable(c.NR_KEYS, 0);
-    for(0 .. c.NR_KEYS) |keycode| {
-      intercom.kb_index = @intCast(keycode);
-      if(std.c.ioctl(tty.file.handle, c.KDGKBENT, &intercom) < 0) vm.raiseErrorStr("%s at table %d, index %d", .{c.strerror(std.c._errno().*), intercom.kb_table, intercom.kb_index});
-      if(intercom.kb_value == c.K_HOLE) continue;
-      vm.pushInteger(intercom.kb_value);
-      vm.setIndex(-2, intercom.kb_index);
+  vm.createTable(c.NUM_STATES, 0);
+  for(0 .. c.NUM_STATES) |modifiers| {
+    vm.createTable(keymap.n_keys, 0);
+    for(0 .. keymap.n_keys) |keycode| {
+      if(keymap.key[keycode].map[modifiers] == c.NOP) continue;
+      vm.pushInteger(keymap.key[keycode].map[modifiers]);
+      vm.setIndex(-2, keycode);
     }
-    vm.setIndex(-2, intercom.kb_table);
+    vm.setIndex(-2, modifiers);
   }
   return 1;
 }
 
-// fn get_accentmap(vm: *lua.Lua) i32 {
-//   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
-
-//   lua.lua_createtable(vm, );
-//   std.c.ioctl(tty.file.handle, c.)
-// }
+fn get_accentmap(vm: *lua.Lua) i32 {
+  if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
+  return 0;
+}
 
 fn set_kbd_leds(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
@@ -117,16 +89,14 @@ fn set_kbd_leds(vm: *lua.Lua) i32 {
   if(vm.toBoolean(1)) state |= c.LED_CAP;
   if(vm.toBoolean(2)) state |= c.LED_NUM;
   if(vm.toBoolean(3)) state |= c.LED_SCR;
-  // KDSKBLED has more semantic meaning than KDSETLED on Linux.
-  if(std.c.ioctl(tty.file.handle, if(target.isBSD()) c.KDSETLED else c.KDSKBLED, state) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+  if(std.c.ioctl(tty.file.handle, c.KDSETLED, state) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
   return 0;
 }
 
 fn get_kbd_leds(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
-  var state: if(target.isBSD()) c_int else c_char = undefined;
-  // KDGKBLED has more semantic meaning than KDGETLED on Linux.
-  if(std.c.ioctl(tty.file.handle, if(target.isBSD()) c.KDGETLED else c.KDGKBLED, &state) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+  var state: c_int = undefined;
+  if(std.c.ioctl(tty.file.handle, c.KDGETLED, &state) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
   vm.pushBoolean(state & c.LED_CAP != 0);
   vm.pushBoolean(state & c.LED_NUM != 0);
   vm.pushBoolean(state & c.LED_SCR != 0);
@@ -139,22 +109,15 @@ fn set_active_vc(vm: *lua.Lua) i32 {
   return 0;
 }
 
-// When switching to the next or previous VC, both Linux and FreeBSD don't just
-// choose active_vc ± 1, but rather select the nearest "allocated/opened" VC.
-// Unfortunately, we ourselves cannot query whether a given VC fits the label.
-// Linux does have VT_GETSTATE but it only works for the first 16 VCs, which is
-// kind of rubbish. Anyways, VCs are *usually* allocated sequentially, so who
-// cares?
+// When switching to the next or previous VC, FreeBSD doesn't just choose
+// active_vc ± 1, but rather selects the nearest "opened" VC. Unfortunately, we
+// ourselves cannot query whether a given VC fits the label. Anyways, VCs are
+// *usually* allocated sequentially, so who cares?
 fn get_active_vc(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
   var result: c_int = undefined;
-  if(target.isBSD()) {
-    // VT_GETINDEX returns the console of the file descriptor and not the active console.
-    if(std.c.ioctl(tty.file.handle, c.VT_GETACTIVE, &result) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
-  } else {
-    result = std.c.ioctl(tty.file.handle, std.os.linux.T.IOCLINUX, c.TIOCL_GETFGCONSOLE);
-    if(result < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
-  }
+  // VT_GETINDEX returns the console of the file descriptor and not the active console.
+  if(std.c.ioctl(tty.file.handle, c.VT_GETACTIVE, &result) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
   vm.pushInteger(result);
   return 1;
 }
@@ -163,6 +126,7 @@ const funcs = [_]lua.FnReg{
   .{ .name = "enable_raw_kbd", .func = lua.wrap(enable_raw_kbd) },
   .{ .name = "disable_raw_kbd", .func = lua.wrap(disable_raw_kbd) },
   .{ .name = "get_keymap", .func = lua.wrap(get_keymap) },
+  .{ .name = "get_accentmap", .func = lua.wrap(get_accentmap) },
   .{ .name = "set_kbd_leds", .func = lua.wrap(set_kbd_leds) },
   .{ .name = "get_kbd_leds", .func = lua.wrap(get_kbd_leds) },
   .{ .name = "set_active_vc", .func = lua.wrap(set_active_vc) },
@@ -172,7 +136,9 @@ const funcs = [_]lua.FnReg{
 pub fn luaopen(vm: *lua.Lua) i32 {
   vm.newLib(&funcs);
 
-  // All of the 104 keys of a standard US layout Windows keyboard
+  // All of the 104 keys of a standard US layout Windows keyboard. The FreeBSD
+  // peculiarities were picked out with the help of misc/kbdscan. Unfortunately,
+  // FreeBSD didn't care enough to put their keycodes in a header file.
   const entries = [_]struct {comptime_int, []const u8}{
     .{c.KEY_ESC, "escape"},
     .{c.KEY_F1, "f1"},
@@ -187,9 +153,9 @@ pub fn luaopen(vm: *lua.Lua) i32 {
     .{c.KEY_F10, "f10"},
     .{c.KEY_F11, "f11"},
     .{c.KEY_F12, "f12"},
-    .{c.KEY_SYSRQ, "print_screen"},
+    .{92, "print_screen"},
     .{c.KEY_SCROLLLOCK, "scroll_lock"},
-    .{c.KEY_PAUSE, "pause"},
+    .{104, "pause"},
 
     .{c.KEY_GRAVE, "backtick"},
     .{c.KEY_1, "1"},
@@ -249,32 +215,32 @@ pub fn luaopen(vm: *lua.Lua) i32 {
     .{c.KEY_RIGHTSHIFT, "right_shift"},
 
     .{c.KEY_LEFTCTRL, "left_ctrl"},
-    .{c.KEY_LEFTMETA, "left_super"},
+    .{105, "left_super"},
     .{c.KEY_LEFTALT, "left_alt"},
     .{c.KEY_SPACE, "space"},
-    .{c.KEY_RIGHTALT, "right_alt"},
-    .{c.KEY_RIGHTMETA, "right_super"},
-    .{c.KEY_COMPOSE, "menu"},
-    .{c.KEY_RIGHTCTRL, "right_ctrl"},
+    .{93, "right_alt"},
+    .{106, "right_super"},
+    .{107, "menu"},
+    .{90, "right_ctrl"},
 
-    .{c.KEY_INSERT, "insert"},
-    .{c.KEY_DELETE, "delete"},
-    .{c.KEY_HOME, "home"},
-    .{c.KEY_END, "end"},
-    .{c.KEY_PAGEUP, "page_up"},
-    .{c.KEY_PAGEDOWN, "page_down"},
+    .{102, "insert"},
+    .{103, "delete"},
+    .{94, "home"},
+    .{99, "end"},
+    .{96, "page_up"},
+    .{101, "page_down"},
 
-    .{c.KEY_UP, "up"},
-    .{c.KEY_LEFT, "left"},
-    .{c.KEY_DOWN, "down"},
-    .{c.KEY_RIGHT, "right"},
+    .{95, "up"},
+    .{97, "left"},
+    .{100, "down"},
+    .{98, "right"},
 
     .{c.KEY_NUMLOCK, "num_lock"},
-    .{c.KEY_KPSLASH, "kp_divide"},
+    .{91, "kp_divide"},
     .{c.KEY_KPASTERISK, "kp_multiply"},
     .{c.KEY_KPMINUS, "kp_subtract"},
     .{c.KEY_KPPLUS, "kp_add"},
-    .{c.KEY_KPENTER, "kp_enter"},
+    .{89, "kp_enter"},
     .{c.KEY_KP1, "kp_1"},
     .{c.KEY_KP2, "kp_2"},
     .{c.KEY_KP3, "kp_3"},
