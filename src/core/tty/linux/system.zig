@@ -56,9 +56,8 @@ fn enable_raw_kbd(vm: *lua.Lua) i32 {
 fn disable_raw_kbd(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
   if(original_kbmode) |x| {
-    if(std.c.ioctl(tty.file.handle, c.KDSKBMODE, x) == 0) {
-      original_kbmode = null;
-    }
+    if(std.c.ioctl(tty.file.handle, c.KDSKBMODE, x) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+    original_kbmode = null;
   }
   return 0;
 }
@@ -147,9 +146,10 @@ fn set_active_vc(vm: *lua.Lua) i32 {
 // Anyways, VCs are *usually* allocated sequentially, so who cares?
 fn get_active_vc(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
-  const result = std.c.ioctl(tty.file.handle, std.os.linux.T.IOCLINUX, c.TIOCL_GETFGCONSOLE);
+  const linux_is_wack: c_char = c.TIOCL_GETFGCONSOLE;
+  const result = std.c.ioctl(tty.file.handle, std.os.linux.T.IOCLINUX, &linux_is_wack);
   if(result < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
-  vm.pushInteger(result);
+  vm.pushInteger(result + 1);
   return 1;
 }
 

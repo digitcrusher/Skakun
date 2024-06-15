@@ -17,7 +17,7 @@ pub fn build(b: *std.Build) void {
     .optimize = optimize,
   }).module("ziglua"));
   exe.linkLibC();
-  exe.linkSystemLibrary("gio-unix-2.0");
+  exe.linkSystemLibrary("gio-2.0");
   exe.linkSystemLibrary("tinfo");
 
   var version: []const u8 = undefined;

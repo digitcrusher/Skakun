@@ -30,7 +30,7 @@ const tty = @import("../system.zig");
 // - https://cgit.freebsd.org/src/tree/sys/sys/kbio.h
 // - https://cgit.freebsd.org/src/tree/sys/sys/consio.h
 //
-// Ioctl parameter type reference: https://cgit.freebsd.org/src/tree/sys/dev/vt/vt_core.c
+// Ioctl parameter type reference: https://cgit.freebsd.org/src/tree/sys/dev/vt/vt_core.c (vtterm_ioctl)
 //
 // Here is a more or less reasonable explanation of the terminology surrounding
 // "virtual consoles" and "virtual terminals": https://unix.stackexchange.com/a/228052
@@ -42,8 +42,7 @@ fn enable_raw_kbd(vm: *lua.Lua) i32 {
   if(original_kbmode != null) return 0;
   var kbmode: c_int = undefined;
   if(std.c.ioctl(tty.file.handle, c.KDGKBMODE, &kbmode) < 0) return 0;
-  const freebsd_is_wack: c_int = c.K_CODE;
-  if(std.c.ioctl(tty.file.handle, c.KDSKBMODE, &freebsd_is_wack) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+  if(std.c.ioctl(tty.file.handle, c.KDSKBMODE, c.K_CODE) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
   original_kbmode = kbmode;
   vm.pushBoolean(true);
   return 1;
@@ -52,9 +51,8 @@ fn enable_raw_kbd(vm: *lua.Lua) i32 {
 fn disable_raw_kbd(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
   if(original_kbmode) |x| {
-    if(std.c.ioctl(tty.file.handle, c.KDSKBMODE, &x) == 0) {
-      original_kbmode = null;
-    }
+    if(std.c.ioctl(tty.file.handle, c.KDSKBMODE, x) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+    original_kbmode = null;
   }
   return 0;
 }
@@ -65,42 +63,56 @@ fn get_keymap(vm: *lua.Lua) i32 {
   var keymap: c.keymap = undefined;
   if(std.c.ioctl(tty.file.handle, c.GIO_KEYMAP, &keymap) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
 
-  vm.createTable(c.NUM_STATES, 0);
-  for(0 .. c.NUM_STATES) |modifiers| {
-    vm.createTable(keymap.n_keys, 0);
-    for(0 .. keymap.n_keys) |keycode| {
+  vm.createTable(keymap.n_keys, 0);
+  for(0 .. keymap.n_keys) |keycode| {
+    vm.createTable(c.NUM_STATES, 2);
+    for(0 .. c.NUM_STATES) |modifiers| {
       if(keymap.key[keycode].map[modifiers] == c.NOP) continue;
-      vm.pushInteger(keymap.key[keycode].map[modifiers]);
-      vm.setIndex(-2, keycode);
+      vm.pushInteger(keymap.key[keycode].map[modifiers] | if(keymap.key[keycode].spcl & @as(u8, 0x80) >> @intCast(modifiers) != 0) c.SPCLKEY else 0);
+      vm.setIndex(-2, @intCast(modifiers));
     }
-    vm.setIndex(-2, modifiers);
+    vm.pushInteger(keymap.key[keycode].flgs);
+    vm.setField(-2, "flags");
+    vm.setIndex(-2, @intCast(keycode));
   }
   return 1;
 }
 
 fn get_accentmap(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
+
+  var accentmap: c.accentmap = undefined;
+  if(std.c.ioctl(tty.file.handle, c.GIO_DEADKEYMAP, &accentmap) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+
+  vm.createTable(accentmap.n_accs, 0);
+  for(0 .. accentmap.n_accs) |accent| {
+    vm.newTable();
+    for(0 .. c.NUM_ACCENTCHARS) |codepoint| {
+      if(accentmap.acc[accent].map[codepoint][0] == 0) break;
+      vm.pushInteger(accentmap.acc[accent].map[codepoint][1]);
+      vm.setIndex(-2, accentmap.acc[accent].map[codepoint][0]);
+    }
+    if(accentmap.acc[accent].accchar != 0) {
+      vm.pushInteger(accentmap.acc[accent].accchar);
+      vm.setIndex(-2, ' ');
+    }
+    vm.setIndex(-2, @intCast(accent));
+  }
+  return 1;
+}
+
+fn set_kbd_locks(vm: *lua.Lua) i32 {
+  if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
+  if(std.c.ioctl(tty.file.handle, c.KDSKBSTATE, vm.checkInteger(1)) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
   return 0;
 }
 
-fn set_kbd_leds(vm: *lua.Lua) i32 {
+fn get_kbd_locks(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
-  var state: c_ulong = 0;
-  if(vm.toBoolean(1)) state |= c.LED_CAP;
-  if(vm.toBoolean(2)) state |= c.LED_NUM;
-  if(vm.toBoolean(3)) state |= c.LED_SCR;
-  if(std.c.ioctl(tty.file.handle, c.KDSETLED, state) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
-  return 0;
-}
-
-fn get_kbd_leds(vm: *lua.Lua) i32 {
-  if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
-  var state: c_int = undefined;
-  if(std.c.ioctl(tty.file.handle, c.KDGETLED, &state) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
-  vm.pushBoolean(state & c.LED_CAP != 0);
-  vm.pushBoolean(state & c.LED_NUM != 0);
-  vm.pushBoolean(state & c.LED_SCR != 0);
-  return 3;
+  var result: c_int = undefined;
+  if(std.c.ioctl(tty.file.handle, c.KDGKBSTATE, &result) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+  vm.pushInteger(result);
+  return 1;
 }
 
 fn set_active_vc(vm: *lua.Lua) i32 {
@@ -127,8 +139,8 @@ const funcs = [_]lua.FnReg{
   .{ .name = "disable_raw_kbd", .func = lua.wrap(disable_raw_kbd) },
   .{ .name = "get_keymap", .func = lua.wrap(get_keymap) },
   .{ .name = "get_accentmap", .func = lua.wrap(get_accentmap) },
-  .{ .name = "set_kbd_leds", .func = lua.wrap(set_kbd_leds) },
-  .{ .name = "get_kbd_leds", .func = lua.wrap(get_kbd_leds) },
+  .{ .name = "set_kbd_locks", .func = lua.wrap(set_kbd_locks) },
+  .{ .name = "get_kbd_locks", .func = lua.wrap(get_kbd_locks) },
   .{ .name = "set_active_vc", .func = lua.wrap(set_active_vc) },
   .{ .name = "get_active_vc", .func = lua.wrap(get_active_vc) },
 };
@@ -139,7 +151,7 @@ pub fn luaopen(vm: *lua.Lua) i32 {
   // All of the 104 keys of a standard US layout Windows keyboard. The FreeBSD
   // peculiarities were picked out with the help of misc/kbdscan. Unfortunately,
   // FreeBSD didn't care enough to put their keycodes in a header file.
-  const entries = [_]struct {comptime_int, []const u8}{
+  const keycodes = [_]struct {comptime_int, []const u8}{
     .{c.KEY_ESC, "escape"},
     .{c.KEY_F1, "f1"},
     .{c.KEY_F2, "f2"},
@@ -253,12 +265,77 @@ pub fn luaopen(vm: *lua.Lua) i32 {
     .{c.KEY_KP0, "kp_0"},
     .{c.KEY_KPDOT, "kp_decimal"},
   };
-  vm.createTable(entries.len, 0);
-  inline for(entries) |entry| {
+  vm.createTable(keycodes.len, 0);
+  inline for(keycodes) |entry| {
     _ = vm.pushString(entry[1]);
     vm.setIndex(-2, entry[0]);
   }
   vm.setField(-2, "keycodes");
+
+  const constants = [_]struct {[:0]const u8, comptime_int}{
+    .{"CLKED", c.CLKED},
+    .{"NLKED", c.NLKED},
+    .{"SLKED", c.SLKED},
+    .{"ALKED", c.ALKED},
+    .{"LOCK_MASK", c.LOCK_MASK},
+
+    .{"ALTGR_OFFSET", c.ALTGR_OFFSET},
+    .{"FLAG_LOCK_C", c.FLAG_LOCK_C},
+    .{"FLAG_LOCK_N", c.FLAG_LOCK_N},
+
+    .{"LSH", @as(u32, c.LSH) | @as(u32, c.SPCLKEY)},
+    .{"RSH", @as(u32, c.RSH) | @as(u32, c.SPCLKEY)},
+    .{"CLK", @as(u32, c.CLK) | @as(u32, c.SPCLKEY)},
+    .{"NLK", @as(u32, c.NLK) | @as(u32, c.SPCLKEY)},
+    .{"SLK", @as(u32, c.SLK) | @as(u32, c.SPCLKEY)},
+    .{"LALT", @as(u32, c.LALT) | @as(u32, c.SPCLKEY)},
+    .{"LCTR", @as(u32, c.LCTR) | @as(u32, c.SPCLKEY)},
+    .{"NEXT", @as(u32, c.NEXT) | @as(u32, c.SPCLKEY)},
+    .{"F_SCR", @as(u32, c.F_SCR) | @as(u32, c.SPCLKEY)},
+    .{"L_SCR", @as(u32, c.L_SCR) | @as(u32, c.SPCLKEY)},
+    .{"RCTR", @as(u32, c.RCTR) | @as(u32, c.SPCLKEY)},
+    .{"RALT", @as(u32, c.RALT) | @as(u32, c.SPCLKEY)},
+    .{"ALK", @as(u32, c.ALK) | @as(u32, c.SPCLKEY)},
+    .{"ASH", @as(u32, c.ASH) | @as(u32, c.SPCLKEY)},
+    .{"META", @as(u32, c.META) | @as(u32, c.SPCLKEY)},
+
+    .{"F_ACC", @as(u32, c.F_ACC) | @as(u32, c.SPCLKEY)},
+    .{"L_ACC", @as(u32, c.L_ACC) | @as(u32, c.SPCLKEY)},
+
+    .{"PREV", @as(u32, c.PREV) | @as(u32, c.SPCLKEY)},
+    .{"LSHA", @as(u32, c.LSHA) | @as(u32, c.SPCLKEY)},
+    .{"RSHA", @as(u32, c.RSHA) | @as(u32, c.SPCLKEY)},
+    .{"LCTRA", @as(u32, c.LCTRA) | @as(u32, c.SPCLKEY)},
+    .{"RCTRA", @as(u32, c.RCTRA) | @as(u32, c.SPCLKEY)},
+    .{"LALTA", @as(u32, c.LALTA) | @as(u32, c.SPCLKEY)},
+    .{"RALTA", @as(u32, c.RALTA) | @as(u32, c.SPCLKEY)},
+
+    .{"SPCLKEY", c.SPCLKEY},
+
+    // Taken from https://cgit.freebsd.org/src/tree/sys/dev/kbd/kbdreg.h
+    .{"SHIFTS1", 1 << 16},
+    .{"SHIFTS2", 1 << 17},
+    .{"SHIFTS", 1 << 16 | 1 << 17},
+    .{"CTLS1", 1 << 18},
+    .{"CTLS2", 1 << 19},
+    .{"CTLS", 1 << 18 | 1 << 19},
+    .{"ALTS1", 1 << 20},
+    .{"ALTS2", 1 << 21},
+    .{"ALTS", 1 << 20 | 1 << 21},
+    .{"AGRS1", 1 << 22},
+    .{"AGRS2", 1 << 23},
+    .{"AGRS", 1 << 22 | 1 << 23},
+    .{"METAS1", 1 << 24},
+    .{"NLKDOWN", 1 << 26},
+    .{"SLKDOWN", 1 << 27},
+    .{"CLKDOWN", 1 << 28},
+    .{"ALKDOWN", 1 << 29},
+    .{"SHIFTAON", 1 << 30},
+  };
+  inline for(constants) |entry| {
+    vm.pushInteger(entry[1]);
+    vm.setField(-2, entry[0]);
+  }
 
   return 1;
 }

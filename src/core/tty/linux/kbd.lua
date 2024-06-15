@@ -54,7 +54,8 @@ function Kbd:feed(string)
     if not keycode then break end
 
     local type = is_release and 'release' or (self.is_pressed[keycode] and 'repeat' or 'press')
-    local _, text = pcall(self.handle_keycode, self, keycode, is_release)
+    self.is_pressed[keycode] = not is_release
+    local _, text = pcall(self.handle_keycode, self, keycode, is_release, type == 'repeat')
 
     result[#result + 1] = {
       type = type,
@@ -80,10 +81,7 @@ function Kbd:read_keycode(buf, offset)
   end
 end
 
-function Kbd:handle_keycode(keycode, is_release)
-  local is_repeat = self.is_pressed[keycode] == not is_release
-  self.is_pressed[keycode] = not is_release
-
+function Kbd:handle_keycode(keycode, is_release, is_repeat)
   local shift_final = (self.shift_state | self.slock_state) ~ self.lock_state
   local action = self.keymap[shift_final]
   if action then
@@ -233,7 +231,7 @@ function Kbd:handle_action(action, is_release, is_repeat)
 
   elseif action >> 8 == KT.CONS then
     if is_release then return end
-    system.set_active_vc(action & 0xff)
+    system.set_active_vc((action & 0xff) + 1)
 
   elseif action >> 8 == KT.SHIFT then
     if is_repeat then return end

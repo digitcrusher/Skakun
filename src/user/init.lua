@@ -1,3 +1,4 @@
+local core = require('core')
 local tty = require('core.tty')
 local utils = require('core.utils')
 
@@ -6,8 +7,8 @@ tty.setup()
 --tty.clear()
 --tty.set_cursor(false)
 
-local linux = require('core.tty.linux')
-require('core').cleanup = function()
+local linux = require(core.platform == 'freebsd' and 'core.tty.freebsd' or 'core.tty.linux')
+function core.cleanup()
   linux.disable_raw_kbd()
   tty.restore()
 end
