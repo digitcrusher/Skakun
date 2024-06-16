@@ -16,7 +16,7 @@
 
 local utils = require('core.utils')
 
-local tty = {
+local tty = setmetatable({
   ansi_colors = {
     'black',
     'red',
@@ -110,8 +110,8 @@ local tty = {
 
   state = {},
   input_buf = '',
-}
-setmetatable(tty, { __index = require('core.tty.system') })
+  is_button_pressed = {},
+}, { __index = require('core.tty.system') })
 
 function tty.setup()
   tty.open()
@@ -120,20 +120,18 @@ function tty.setup()
   tty.load_functions()
   tty.write('\27[?1049h') -- Switch to the alternate terminal screen
   tty.write('\27[?2004h') -- Enable bracketed paste
-  tty.write('\27=') -- Discriminate numpad keys (Linux console)
-  -- tty.write('\27[?1000h') -- Enable mouse button events
-  -- tty.write('\27[?1003h') -- Enable mouse movement events
-  -- tty.write('\27[?1006h') -- Extend the range of mouse coordinates the terminal is able to report
+  tty.write('\27[?1000h') -- Enable mouse button events
+  tty.write('\27[?1003h') -- Enable mouse movement events
+  tty.write('\27[?1006h') -- Extend the range of mouse coordinates the terminal is able to report
   tty.write('\27]22;>default\27\\', '\27]22;\27\\') -- Push the terminal default onto the pointer shape stack
 end
 
 function tty.restore()
   tty.reset() -- TODO: save the text attributes from before
   tty.write('\27]22;<\27\\') -- Pop our pointer shape from the stack
-  -- tty.write('\27[?1006l') -- Shrink the range of mouse coordinates to default
-  -- tty.write('\27[?1003l') -- Disable mouse movement events
-  -- tty.write('\27[?1000l') -- Disable mouse button events
-  tty.write('\27>') -- Don't discriminate numpad keys (Linux console)
+  tty.write('\27[?1006l') -- Shrink the range of mouse coordinates to default
+  tty.write('\27[?1003l') -- Disable mouse movement events
+  tty.write('\27[?1000l') -- Disable mouse button events
   tty.write('\27[?2004l') -- Disable bracketed paste
   tty.write('\27[?1049l') -- Switch back to the primary terminal screen
   tty.disable_raw_mode()
@@ -699,7 +697,77 @@ function tty.load_functions()
 end
 
 function tty.read_events()
-  tty.input_buf = tty.input_buf .. tty.read()
+  local result = {}
+
+  local i = 1
+  while true do
+    tty.input_buf = tty.input_buf .. tty.read()
+    local events
+    events, i = tty.take_event(tty.input_buf, i)
+    if not events then break end
+    for _, event in ipairs(events) do
+      result[#result + 1] = event
+    end
+  end
+  tty.input_buf = tty.input_buf:sub(i)
+
+  return result
+end
+
+function tty.take_event(buf, offset)
+  return tty.take_mouse_event(buf, offset)
+end
+
+function tty.take_mouse_event(buf, offset)
+  local bits, x, y, event = buf:match('^\27%[<(%d+);(%d+);(%d+)([Mm])', offset)
+  if not event then
+    return nil, offset
+  end
+  offset = offset + #bits + #x + #y + #event + 5
+
+  x = tonumber(x)
+  y = tonumber(y)
+  bits = tonumber(bits)
+  if bits & 32 ~= 0 then
+    return {{ type = 'move', x = x, y = y }}, offset
+  end
+
+  local shift = bits & 4 ~= 0
+  local alt = bits & 8 ~= 0
+  local ctrl = bits & 16 ~= 0
+  local button = ({
+    [0] = 'mouse_left',
+    [1] = 'mouse_middle',
+    [2] = 'mouse_right',
+    [64] = 'scroll_up',
+    [65] = 'scroll_down',
+    [66] = 'scroll_left',
+    [67] = 'scroll_right',
+    [128] = 'mouse_prev',
+    [129] = 'mouse_next',
+  })[bits & ~28]
+  if not button then
+    return {}, offset
+  end
+
+  if button == 'scroll_up' or button == 'scroll_down' then
+    tty.is_button_pressed[button] = false
+    return {
+      { type = 'press',   button = button, alt = alt, ctrl = ctrl, shift = shift, x = x, y = y },
+      { type = 'release', button = button, alt = alt, ctrl = ctrl, shift = shift, x = x, y = y },
+    }, offset
+  end
+
+  local type
+  if event == 'M' then
+    type = tty.is_button_pressed[button] and 'repeat' or 'press'
+    tty.is_button_pressed[button] = true
+  else
+    type = 'release'
+    tty.is_button_pressed[button] = false
+  end
+
+  return {{ type = type, button = button, alt = alt, ctrl = ctrl, shift = shift, x = x, y = y }}, offset
 end
 
 return tty

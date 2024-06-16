@@ -7,9 +7,9 @@ tty.setup()
 --tty.clear()
 --tty.set_cursor(false)
 
-local linux = require(core.platform == 'freebsd' and 'core.tty.freebsd' or 'core.tty.linux')
+--local linux = require(core.platform == 'freebsd' and 'core.tty.freebsd' or 'core.tty.linux')
 function core.cleanup()
-  linux.disable_raw_kbd()
+  --linux.disable_raw_kbd()
   tty.restore()
 end
 
@@ -36,7 +36,7 @@ for keycode, action in pairs(linux.get_keymap()[2]) do
   io.write(linux.keycodes[keycode] or keycode, ' \t-> ', types[action >> 8], ':', action & 0xff, ' \t(', action, ')\n')
 end]]--
 
-local kbd = linux.Kbd.new()
+--[[local kbd = linux.Kbd.new()
 linux.enable_raw_kbd()
 while true do
   local keys = kbd:feed(tty.read())
@@ -50,7 +50,7 @@ while true do
   end
   tty.flush()
   if #keys > 0 and keys[1].keycode == 'escape' then break end
-end
+end]]--
 
 --[[
 
@@ -194,6 +194,8 @@ end
 -- Mouse shapes part 2
 tty.set_mouse_shape('default')
 
+]]--
+
 -- Keyboard input, cursor shapes and window title
 tty.set_cursor(true)
 tty.write('Press ')
@@ -203,7 +205,14 @@ tty.set_italic()
 tty.write(' to quit.\r\n')
 
 for i = 1, math.huge do
-  tty.read_events()
+  for _, event in ipairs(tty.read_events()) do
+    for k, v in pairs(event) do
+      tty.write(k, '=', tostring(v), ' ')
+    end
+    tty.write('\r\n')
+  end
+
+  --tty.input_buf = tty.input_buf .. tty.read()
   local x = tty.input_buf
   if tty.input_buf == '\27' then break end
   x = x:gsub('\\', '\\\\')
@@ -216,7 +225,3 @@ for i = 1, math.huge do
   tty.set_window_title('The time is: ' .. os.date())
   tty.flush()
 end
-
-tty.restore()
-
-]]--
