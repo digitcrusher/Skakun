@@ -3,15 +3,14 @@ local tty = require('core.tty')
 local utils = require('core.utils')
 
 utils.lock_globals()
+function core.cleanup()
+  tty.restore()
+end
 tty.setup()
 --tty.clear()
 --tty.set_cursor(false)
 
 --local linux = require(core.platform == 'freebsd' and 'core.tty.freebsd' or 'core.tty.linux')
-function core.cleanup()
-  --linux.disable_raw_kbd()
-  tty.restore()
-end
 
 --[[local types = {
   [0] = 'KT_LATIN',
@@ -205,18 +204,22 @@ tty.set_italic()
 tty.write(' to quit.\r\n')
 
 for i = 1, math.huge do
-  for _, event in ipairs(tty.read_events()) do
+  local events = tty.read_events()
+  for _, event in ipairs(events) do
     for k, v in pairs(event) do
       tty.write(k, '=', tostring(v), ' ')
     end
     tty.write('\r\n')
   end
+  if #events >= 1 and events[1].button == 'escape' then break end
 
   --tty.input_buf = tty.input_buf .. tty.read()
   local x = tty.input_buf
-  if tty.input_buf == '\27' then break end
   x = x:gsub('\\', '\\\\')
-  for i = 1, 31 do
+  for i = 0, 31 do
+    x = x:gsub(string.char(i), '\\' .. i)
+  end
+  for i = 127, 255 do
     x = x:gsub(string.char(i), '\\' .. i)
   end
   tty.write(x)
