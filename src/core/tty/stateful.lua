@@ -14,6 +14,14 @@
 -- You should have received a copy of the GNU General Public License
 -- along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+local core = require('core')
+local InputParser = require('core.tty.input_parser')
+local unix
+if core.platform == 'linux' then
+  unix = require('core.tty.linux')
+elseif core.platform == 'freebsd' then
+  unix = require('core.tty.freebsd')
+end
 local utils = require('core.utils')
 
 local tty = setmetatable({
@@ -108,50 +116,24 @@ local tty = setmetatable({
     clipboard = true,
   },
 
-  keymap = {
-    [  0] = { button = 'space', ctrl = true },
-    [  1] = { button = 'a', ctrl = true },
-    [  2] = { button = 'b', ctrl = true },
-    [  3] = { button = 'c', ctrl = true },
-    [  4] = { button = 'd', ctrl = true },
-    [  5] = { button = 'e', ctrl = true },
-    [  6] = { button = 'f', ctrl = true },
-    [  7] = { button = 'g', ctrl = true },
-    [  8] = { button = 'backspace', ctrl = true },
-    [  9] = { button = 'tab', text = '\t' },
-    [ 10] = { button = 'j', ctrl = true },
-    [ 11] = { button = 'k', ctrl = true },
-    [ 12] = { button = 'l', ctrl = true },
-    [ 13] = { button = 'enter', text = '\n' },
-    [ 14] = { button = 'n', ctrl = true },
-    [ 15] = { button = 'o', ctrl = true },
-    [ 16] = { button = 'p', ctrl = true },
-    [ 17] = { button = 'q', ctrl = true },
-    [ 18] = { button = 'r', ctrl = true },
-    [ 19] = { button = 's', ctrl = true },
-    [ 20] = { button = 't', ctrl = true },
-    [ 21] = { button = 'u', ctrl = true },
-    [ 22] = { button = 'v', ctrl = true },
-    [ 23] = { button = 'w', ctrl = true },
-    [ 24] = { button = 'x', ctrl = true },
-    [ 25] = { button = 'y', ctrl = true },
-    [ 26] = { button = 'z', ctrl = true },
-    [ 27] = { button = 'escape' },
-    [ 28] = { button = 'backslash', ctrl = true },
-    [ 29] = { button = 'right_bracket', ctrl = true },
-    [ 30] = { button = 'backtick', ctrl = true, shift = true },
-    [ 31] = { button = 'slash', ctrl = true },
-    [ 32] = { button = 'space', text = ' ' },
-    [127] = { button = 'backspace' },
-  },
-
   state = {},
-  input_buf = '',
-  is_button_pressed = {},
 }, { __index = require('core.tty.system') })
 
 function tty.setup()
   tty.open()
+  tty.input_parser = nil
+  if unix then
+    local ok
+    ok, tty.input_parser = pcall(unix.Kbd.new)
+    if ok then
+      unix.enable_raw_kbd()
+    else
+      tty.input_parser = nil
+    end
+  end
+  if not tty.input_parser then
+    tty.input_parser = InputParser.new()
+  end
   tty.enable_raw_mode()
   tty.detect_caps()
   tty.load_functions()
@@ -174,6 +156,9 @@ function tty.restore()
   tty.write('\27[?2004l') -- Disable bracketed paste
   tty.write('\27[?1049l') -- Switch back to the primary terminal screen
   tty.disable_raw_mode()
+  if unix then
+    pcall(unix.disable_raw_kbd)
+  end
   tty.close()
 end
 
@@ -737,220 +722,14 @@ end
 
 function tty.read_events()
   local result = {}
-
-  local i = 1
   while true do
-    tty.input_buf = tty.input_buf .. tty.read()
-
-    local events
-    events, i = tty.take_event(tty.input_buf, i)
-    if not events then break end
-
+    local events = tty.input_parser:feed(tty.read())
+    if #events == 0 then break end
     for _, event in ipairs(events) do
-      if event.type == 'press' then
-        if tty.is_button_pressed[event.button] then
-          event.type = 'repeat'
-        else
-          tty.is_button_pressed[event.button] = true
-        end
-      elseif event.type == 'release' then
-        tty.is_button_pressed[event.button] = false
-      end
-
       result[#result + 1] = event
     end
   end
-  tty.input_buf = tty.input_buf:sub(i)
-
   return result
-end
-
-function tty.take_event(buf, offset)
-  local funcs = {
-    tty.take_mouse_event,
-    tty.take_functional_key,
-    tty.take_functional_key_with_mods,
-    tty.take_shift_tab,
-    tty.take_key,
-  }
-  for _, func in ipairs(funcs) do
-    local events, new_offset = func(buf, offset)
-    if events then
-      return events, new_offset
-    end
-  end
-  return nil, offset
-end
-
-function tty.take_mouse_event(buf, offset)
-  -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Mouse-Tracking
-  local bits, x, y, event = buf:match('^\27%[<(%d+);(%d+);(%d+)([Mm])', offset)
-  if not event then
-    return nil, offset
-  end
-  offset = offset + #bits + #x + #y + #event + 5
-
-  x = tonumber(x)
-  y = tonumber(y)
-  bits = tonumber(bits)
-  if bits & 32 ~= 0 then
-    return {{ type = 'move', x = x, y = y }}, offset
-  end
-
-  local shift = bits & 4 ~= 0
-  local alt = bits & 8 ~= 0
-  local ctrl = bits & 16 ~= 0
-  local button = ({
-    [0] = 'mouse_left',
-    [1] = 'mouse_middle',
-    [2] = 'mouse_right',
-    [64] = 'scroll_up',
-    [65] = 'scroll_down',
-    [66] = 'scroll_left',
-    [67] = 'scroll_right',
-    [128] = 'mouse_prev',
-    [129] = 'mouse_next',
-  })[bits & ~28]
-  if not button then
-    return {}, offset
-  end
-
-  if button == 'scroll_up' or button == 'scroll_down' then
-    return {
-      { type = 'press',   button = button, alt = alt, ctrl = ctrl, shift = shift, x = x, y = y },
-      { type = 'release', button = button, alt = alt, ctrl = ctrl, shift = shift, x = x, y = y },
-    }, offset
-  else
-    return {{ type = event == 'M' and 'press' or 'release', button = button, alt = alt, ctrl = ctrl, shift = shift, x = x, y = y }}, offset
-  end
-end
-
-function tty.take_functional_key(buf, offset)
-  local seq = buf:match('^\27[O%[]%d*.', offset)
-  local button = ({
-    ['\27OP'] = 'f1',
-    ['\27OQ'] = 'f2',
-    ['\27OR'] = 'f3',
-    ['\27OS'] = 'f4',
-    ['\27[15~'] = 'f5',
-    ['\27[17~'] = 'f6',
-    ['\27[18~'] = 'f7',
-    ['\27[19~'] = 'f8',
-    ['\27[20~'] = 'f9',
-    ['\27[21~'] = 'f10',
-    ['\27[23~'] = 'f11',
-    ['\27[24~'] = 'f12',
-    ['\27[29~'] = 'menu',
-    ['\27[2~'] = 'insert',
-    ['\27[3~'] = 'delete',
-    ['\27[H'] = 'home',
-    ['\27[F'] = 'end',
-    ['\27[5~'] = 'page_up',
-    ['\27[6~'] = 'page_down',
-    ['\27[A'] = 'up',
-    ['\27[D'] = 'left',
-    ['\27[B'] = 'down',
-    ['\27[C'] = 'right',
-    ['\27Oo'] = 'kp_divide',
-    ['\27Oj'] = 'kp_multiply',
-    ['\27Om'] = 'kp_subtract',
-    ['\27Ok'] = 'kp_add',
-    ['\27OM'] = 'kp_enter',
-    ['\27[E'] = 'kp_5',
-  })[seq]
-
-  if button then
-    return {
-      { type = 'press',   button = button, alt = false, ctrl = false, shift = false },
-      { type = 'release', button = button, alt = false, ctrl = false, shift = false },
-    }, offset + #seq
-  else
-    return nil, offset
-  end
-end
-
-function tty.take_functional_key_with_mods(buf, offset)
-  local a, b, c = buf:match('^\27(%[%d+;)(%d+)(.)', offset)
-  if not c then
-    a, b, c = buf:match('^\27(O)(%d+)(.)', offset)
-  end
-  if not c then
-    return nil, offset
-  end
-
-  local mods = tonumber(b) - 1
-  local shift = mods & 1 ~= 0
-  local alt = mods & 2 ~= 0
-  local ctrl = mods & 4 ~= 0
-  local button = ({
-    ['[1; P'] = 'f1',
-    ['[1; Q'] = 'f2',
-    ['[1; R'] = 'f3',
-    ['[1; S'] = 'f4',
-    ['[15; ~'] = 'f5',
-    ['[17; ~'] = 'f6',
-    ['[18; ~'] = 'f7',
-    ['[19; ~'] = 'f8',
-    ['[20; ~'] = 'f9',
-    ['[21; ~'] = 'f10',
-    ['[23; ~'] = 'f11',
-    ['[24; ~'] = 'f12',
-    ['[29; ~'] = 'menu',
-    ['[2; ~'] = 'insert',
-    ['[3; ~'] = 'delete',
-    ['[1; H'] = 'home',
-    ['[1; F'] = 'end',
-    ['[5; ~'] = 'page_up',
-    ['[6; ~'] = 'page_down',
-    ['[1; A'] = 'up',
-    ['[1; D'] = 'left',
-    ['[1; B'] = 'down',
-    ['[1; C'] = 'right',
-    ['O o'] = 'kp_divide',
-    ['O j'] = 'kp_multiply',
-    ['O m'] = 'kp_subtract',
-    ['O k'] = 'kp_add',
-    ['O M'] = 'kp_enter',
-    ['[1; E'] = 'kp_5',
-    -- On Konsole:
-    ['O P'] = 'f1',
-    ['O Q'] = 'f2',
-    ['O R'] = 'f3',
-    ['O S'] = 'f4',
-  })[a .. ' ' .. c]
-
-  if button then
-    return {
-      { type = 'press',   button = button, alt = alt, ctrl = ctrl, shift = shift },
-      { type = 'release', button = button, alt = alt, ctrl = ctrl, shift = shift },
-    }, offset + 1 + #a + #b + #c
-  else
-    return nil, offset
-  end
-end
-
-function tty.take_shift_tab(buf, offset)
-  if buf:match('^\27%[Z', offset) then
-    return {
-      { type = 'press',   button = 'tab', alt = false, ctrl = false, shift = true },
-      { type = 'release', button = 'tab', alt = false, ctrl = false, shift = true },
-    }, offset + 3
-  else
-    return nil, offset
-  end
-end
-
-function tty.take_key(buf, offset)
-  local alt = buf:byte() == 27 and #buf > 1
-  local key = tty.keymap[buf:byte(offset + (alt and 1 or 0))]
-  if key then
-    return {
-      { type = 'press',   button = key.button, alt = alt, ctrl = key.ctrl or false, shift = key.shift or false, text = key.text },
-      { type = 'release', button = key.button, alt = alt, ctrl = key.ctrl or false, shift = key.shift or false, text = key.text },
-    }, offset + 1 + (alt and 1 or 0)
-  else
-    return nil, offset
-  end
 end
 
 return tty

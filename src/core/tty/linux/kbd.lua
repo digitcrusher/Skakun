@@ -23,7 +23,7 @@ local K, KG, KT = system.K, system.KG, system.KT
 
 local Kbd = {
   keycodes = system.keycodes,
-  feed_buf = '',
+  buf = '',
   shift_state = 0,
   slock_state = 0,
   lock_state = 0,
@@ -43,27 +43,33 @@ function Kbd.new()
 end
 
 function Kbd:feed(string)
-  self.feed_buf = self.feed_buf .. string
+  self.buf = self.buf .. string
 
   local result = {}
 
   local i = 1
-  while i <= #self.feed_buf do
+  while i <= #self.buf do
     local keycode, is_release
-    keycode, is_release, i = self:read_keycode(self.feed_buf, i)
+    keycode, is_release, i = self:read_keycode(self.buf, i)
     if not keycode then break end
 
-    local type = is_release and 'release' or (self.is_pressed[keycode] and 'repeat' or 'press')
-    self.is_pressed[keycode] = not is_release
-    local _, text = pcall(self.handle_keycode, self, keycode, is_release, type == 'repeat')
-
-    result[#result + 1] = {
-      type = type,
-      keycode = self.keycodes[keycode],
-      text = text,
+    local state = self.shift_state | self.slock_state
+    local event = {
+      type = is_release and 'release' or (self.is_pressed[keycode] and 'repeat' or 'press'),
+      button = self.keycodes[keycode],
+      alt = state & 1 << KG.ALT ~= 0,
+      ctrl = state & 1 << KG.CTRL ~= 0,
+      shift = state & 1 << KG.SHIFT ~= 0,
     }
+    local ok, text = pcall(self.handle_keycode, self, keycode, is_release, type == 'repeat')
+    if ok then
+      event.text = text
+    end
+    self.is_pressed[keycode] = not is_release
+
+    result[#result + 1] = event
   end
-  self.feed_buf = self.feed_buf:sub(i)
+  self.buf = self.buf:sub(i)
 
   return result
 end

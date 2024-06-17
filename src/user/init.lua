@@ -213,8 +213,7 @@ for i = 1, math.huge do
   end
   if #events >= 1 and events[1].button == 'escape' then break end
 
-  --tty.input_buf = tty.input_buf .. tty.read()
-  local x = tty.input_buf
+  local x = tty.input_parser.buf
   x = x:gsub('\\', '\\\\')
   for i = 0, 31 do
     x = x:gsub(string.char(i), '\\' .. i)
@@ -223,7 +222,7 @@ for i = 1, math.huge do
     x = x:gsub(string.char(i), '\\' .. i)
   end
   tty.write(x)
-  tty.input_buf = ''
+  tty.input_parser.buf = ''
   tty.set_cursor_shape(tty.cursor_shapes[i % #tty.cursor_shapes + 1])
   tty.set_window_title('The time is: ' .. os.date())
   tty.flush()

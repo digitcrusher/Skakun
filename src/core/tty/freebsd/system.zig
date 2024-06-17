@@ -41,7 +41,7 @@ fn enable_raw_kbd(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
   if(original_kbmode != null) return 0;
   var kbmode: c_int = undefined;
-  if(std.c.ioctl(tty.file.handle, c.KDGKBMODE, &kbmode) < 0) return 0;
+  if(std.c.ioctl(tty.file.handle, c.KDGKBMODE, &kbmode) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
   if(std.c.ioctl(tty.file.handle, c.KDSKBMODE, c.K_CODE) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
   original_kbmode = kbmode;
   vm.pushBoolean(true);
@@ -53,6 +53,8 @@ fn disable_raw_kbd(vm: *lua.Lua) i32 {
   if(original_kbmode) |x| {
     if(std.c.ioctl(tty.file.handle, c.KDSKBMODE, x) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
     original_kbmode = null;
+    vm.pushBoolean(true);
+    return 1;
   }
   return 0;
 }
