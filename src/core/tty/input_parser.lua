@@ -169,6 +169,7 @@ function Parser:feed(string)
       self.read_functional_key,
       self.read_functional_key_with_mods,
       self.read_shift_tab,
+      self.read_paste,
       self.read_key,
       self.read_codepoint,
     }) do
@@ -352,6 +353,18 @@ function Parser:read_shift_tab(buf, offset)
   else
     return nil, offset
   end
+end
+
+function Parser:read_paste(buf, offset)
+  -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Bracketed-Paste-Mode
+  if not buf:match('^\27%[200~', offset) then
+    return nil, offset
+  end
+  local end_offset = buf:find('\27[201~', offset, true)
+  if not end_offset then
+    return {}, offset
+  end
+  return {{ type = 'paste', text = buf:sub(offset + 6, end_offset - 1) }}, end_offset + 6
 end
 
 function Parser:read_key(buf, offset)
