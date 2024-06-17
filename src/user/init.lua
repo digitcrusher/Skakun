@@ -206,8 +206,25 @@ tty.write(' to quit.\r\n')
 for i = 1, math.huge do
   local events = tty.read_events()
   for _, event in ipairs(events) do
-    for k, v in pairs(event) do
-      tty.write(k, '=', tostring(v), ' ')
+    if event.type == 'press' or event.type == 'repeat' or event.type == 'release' then
+      tty.write(event.type, '\t')
+      if event.alt then
+        tty.write('alt+')
+      end
+      if event.ctrl then
+        tty.write('ctrl+')
+      end
+      if event.shift then
+        tty.write('shift+')
+      end
+      tty.write(event.button, ' ')
+      if event.text then
+        tty.write('“', event.text, '”')
+      end
+    else
+      for k, v in pairs(event) do
+        tty.write(k, '=', tostring(v), ' ')
+      end
     end
     tty.write('\r\n')
   end

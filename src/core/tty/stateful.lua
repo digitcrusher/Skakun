@@ -139,6 +139,7 @@ function tty.setup()
   tty.load_functions()
   tty.write('\27[?1049h') -- Switch to the alternate terminal screen
   tty.write('\27[?2004h') -- Enable bracketed paste
+  tty.write('\27[>31u') -- Send key events in Kitty's format
   tty.write('\27=') -- Discriminate numpad keys
   tty.write('\27[?1000h') -- Enable mouse button events
   tty.write('\27[?1003h') -- Enable mouse movement events
@@ -153,6 +154,7 @@ function tty.restore()
   tty.write('\27[?1003l') -- Disable mouse movement events
   tty.write('\27[?1000l') -- Disable mouse button events
   tty.write('\27>') -- Don't discriminate numpad keys
+  tty.write('\27[<u') -- Pop the Kitty key event format from the stack
   tty.write('\27[?2004l') -- Disable bracketed paste
   tty.write('\27[?1049l') -- Switch back to the primary terminal screen
   tty.disable_raw_mode()

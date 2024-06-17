@@ -146,12 +146,116 @@ local Parser = {
     [125] = { button = 'right_bracket', shift = true, text = '}' },
     [126] = { button = 'backtick', shift = true, text = '~' },
   },
+
+  kitty_keycodes = {
+    [   27] = 'escape',
+    [57361] = 'print_screen',
+    [57359] = 'scroll_lock',
+    [57362] = 'pause',
+
+    [   96] = 'backtick',
+    [   49] = '1',
+    [   50] = '2',
+    [   51] = '3',
+    [   52] = '4',
+    [   53] = '5',
+    [   54] = '6',
+    [   55] = '7',
+    [   56] = '8',
+    [   57] = '9',
+    [   48] = '0',
+    [   45] = 'minus',
+    [   61] = 'equal',
+    [  127] = 'backspace',
+
+    [    9] = 'tab',
+    [  113] = 'q',
+    [  119] = 'w',
+    [  101] = 'e',
+    [  114] = 'r',
+    [  116] = 't',
+    [  121] = 'y',
+    [  117] = 'u',
+    [  105] = 'i',
+    [  111] = 'o',
+    [  112] = 'p',
+    [   91] = 'left_bracket',
+    [   93] = 'right_bracket',
+    [   92] = 'backslash',
+
+    [57358] = 'caps_lock',
+    [   97] = 'a',
+    [  115] = 's',
+    [  100] = 'd',
+    [  102] = 'f',
+    [  103] = 'g',
+    [  104] = 'h',
+    [  106] = 'j',
+    [  107] = 'k',
+    [  108] = 'l',
+    [   59] = 'semicolon',
+    [   39] = 'apostrophe',
+    [   13] = 'enter',
+
+    [57441] = 'left_shift',
+    [  122] = 'z',
+    [  120] = 'x',
+    [   99] = 'c',
+    [  118] = 'v',
+    [   98] = 'b',
+    [  110] = 'n',
+    [  109] = 'm',
+    [   44] = 'comma',
+    [   46] = 'dot',
+    [   47] = 'slash',
+    [57447] = 'right_shift',
+
+    [57442] = 'left_ctrl',
+    [57444] = 'left_super',
+    [57443] = 'left_alt',
+    [   32] = 'space',
+    [57449] = 'right_alt',
+    [57453] = 'right_alt',
+    [57450] = 'right_super',
+    [57363] = 'menu',
+    [57448] = 'right_ctrl',
+
+    [57360] = 'num_lock',
+    [57410] = 'kp_divide',
+    [57411] = 'kp_multiply',
+    [57412] = 'kp_subtract',
+    [57413] = 'kp_add',
+    [57414] = 'kp_enter',
+    [57400] = 'kp_1',
+    [57424] = 'kp_1',
+    [57401] = 'kp_2',
+    [57420] = 'kp_2',
+    [57402] = 'kp_3',
+    [57422] = 'kp_3',
+    [57403] = 'kp_4',
+    [57417] = 'kp_4',
+    [57404] = 'kp_5',
+    [57405] = 'kp_6',
+    [57418] = 'kp_6',
+    [57406] = 'kp_7',
+    [57423] = 'kp_7',
+    [57407] = 'kp_8',
+    [57419] = 'kp_8',
+    [57408] = 'kp_9',
+    [57421] = 'kp_9',
+    [57399] = 'kp_0',
+    [57425] = 'kp_0',
+    [57416] = 'kp_decimal',
+    [57426] = 'kp_decimal',
+  },
+
   buf = '',
 }
 
 function Parser.new()
   return setmetatable({
     keymap = setmetatable({}, { __index = Parser.keymap }),
+    kitty_keycodes = setmetatable({}, { __index = Parser.kitty_keycodes }),
     is_pressed = {},
   }, { __index = Parser })
 end
@@ -165,13 +269,15 @@ function Parser:feed(string)
   while i <= #self.buf do
     local events
     for _, func in ipairs({
-      self.read_mouse,
-      self.read_functional_key,
-      self.read_functional_key_with_mods,
-      self.read_shift_tab,
-      self.read_paste,
-      self.read_key,
-      self.read_codepoint,
+      self.take_mouse,
+      self.take_kitty_key,
+      self.take_functional_key,
+      self.take_functional_key_with_mods,
+      self.take_shift_tab,
+      self.take_paste,
+      self.drop_kitty_functional_key,
+      self.take_key,
+      self.take_codepoint,
     }) do
       events, i = func(self, self.buf, i)
       if events then break end
@@ -197,7 +303,7 @@ function Parser:feed(string)
   return result
 end
 
-function Parser:read_mouse(buf, offset)
+function Parser:take_mouse(buf, offset)
   -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Mouse-Tracking
   local bits, x, y, event = buf:match('^\27%[<(%d+);(%d+);(%d+)([Mm])', offset)
   if not event then
@@ -230,7 +336,7 @@ function Parser:read_mouse(buf, offset)
     return {}, offset
   end
 
-  if button == 'scroll_up' or button == 'scroll_down' then
+  if button:find('scroll', 1, true) then
     return {
       { type = 'press',   button = button, alt = alt, ctrl = ctrl, shift = shift, x = x, y = y },
       { type = 'release', button = button, alt = alt, ctrl = ctrl, shift = shift, x = x, y = y },
@@ -240,7 +346,70 @@ function Parser:read_mouse(buf, offset)
   end
 end
 
-function Parser:read_functional_key(buf, offset)
+function Parser:take_kitty_key(buf, offset)
+  -- Reference: https://sw.kovidgoyal.net/kitty/keyboard-protocol/
+  -- Honestly, this protocol is so half-baked. How am I supposed to distinguish
+  -- the "new" \27[A from the old \27[A and so on??? Oh, right. I have to send
+  -- yet another terminal query across the Atlantic… And are we really going to
+  -- ignore the monster dwelling below?
+
+  local keycode, mods, event, codepoint, new_offset
+
+  keycode, new_offset = buf:match('^\27%[(%d+)u()', offset)
+
+  if not keycode then keycode, codepoint, new_offset = buf:match('^\27%[(%d+);;(%d+)u()', offset) end
+  if not keycode then keycode, codepoint, new_offset = buf:match('^\27%[%d+::(%d+);;(%d+)u()', offset) end
+
+  if not keycode then codepoint = nil end
+  if not keycode then keycode, mods, new_offset = buf:match('^\27%[(%d+);(%d+)u()', offset) end
+  if not keycode then keycode, mods, new_offset = buf:match('^\27%[(%d+):%d+;(%d+)u()', offset) end
+  if not keycode then keycode, mods, new_offset = buf:match('^\27%[%d+::(%d+);(%d+)u()', offset) end
+
+  if not keycode then keycode, mods, codepoint, new_offset = buf:match('^\27%[(%d+);(%d+);(%d+)u()', offset) end
+  if not keycode then keycode, mods, codepoint, new_offset = buf:match('^\27%[(%d+):%d+;(%d+);(%d+)u()', offset) end
+  if not keycode then keycode, mods, codepoint, new_offset = buf:match('^\27%[%d+::(%d+);(%d+);(%d+)u()', offset) end
+
+  if not keycode then codepoint = nil end
+  if not keycode then keycode, mods, event, new_offset = buf:match('^\27%[(%d+);(%d+):(%d)u()', offset) end
+  if not keycode then keycode, mods, event, new_offset = buf:match('^\27%[(%d+):%d+;(%d+):(%d)u()', offset) end
+  if not keycode then keycode, mods, event, new_offset = buf:match('^\27%[%d+::(%d+);(%d+):(%d)u()', offset) end
+
+  if not keycode then keycode, mods, event, codepoint, new_offset = buf:match('^\27%[(%d+);(%d+):(%d);(%d+)u()', offset) end
+  if not keycode then keycode, mods, event, codepoint, new_offset = buf:match('^\27%[(%d+):%d+;(%d+):(%d);(%d+)u()', offset) end
+  if not keycode then keycode, mods, event, codepoint, new_offset = buf:match('^\27%[%d+::(%d+);(%d+):(%d);(%d+)u()', offset) end
+
+  if not keycode then
+    return nil, offset
+  end
+
+  local type
+  if event == '1' or not event then
+    type = 'press'
+  elseif event == '2' then
+    type = 'repeat'
+  else
+    type = 'release'
+  end
+  local button = self.kitty_keycodes[tonumber(keycode)]
+  mods = mods and tonumber(mods) - 1 or 0
+
+  if button then
+    return {{
+      type = type,
+      button = button,
+      alt = mods & 2 ~= 0,
+      ctrl = mods & 4 ~= 0,
+      shift = mods & 1 ~= 0,
+      text = codepoint and utf8.char(codepoint),
+    }}, new_offset
+  elseif codepoint then
+    return {{ type = 'paste', text = utf8.char(codepoint) }}, new_offset
+  else
+    return {}, new_offset
+  end
+end
+
+function Parser:take_functional_key(buf, offset)
   local seq = buf:match('^\27[O%[]%d*.', offset)
   local button = ({
     ['\27OP'] = 'f1',
@@ -272,6 +441,11 @@ function Parser:read_functional_key(buf, offset)
     ['\27Ok'] = 'kp_add',
     ['\27OM'] = 'kp_enter',
     ['\27[E'] = 'kp_5',
+    -- In Kitty's "enhanced" keyboard protocol mode:
+    ['\27[P'] = 'f1',
+    ['\27[Q'] = 'f2',
+    ['\27[13~'] = 'f3',
+    ['\27[S'] = 'f4',
   })[seq]
 
   if button then
@@ -284,7 +458,7 @@ function Parser:read_functional_key(buf, offset)
   end
 end
 
-function Parser:read_functional_key_with_mods(buf, offset)
+function Parser:take_functional_key_with_mods(buf, offset)
   local a, b, c = buf:match('^\27(%[%d+;)(%d+)(.)', offset)
   if not c then
     a, b, c = buf:match('^\27(O)(%d+)(.)', offset)
@@ -332,6 +506,8 @@ function Parser:read_functional_key_with_mods(buf, offset)
     ['O Q'] = 'f2',
     ['O R'] = 'f3',
     ['O S'] = 'f4',
+    -- On Kitty:
+    ['[13; ~'] = 'f3',
   })[a .. ' ' .. c]
 
   if button then
@@ -344,7 +520,7 @@ function Parser:read_functional_key_with_mods(buf, offset)
   end
 end
 
-function Parser:read_shift_tab(buf, offset)
+function Parser:take_shift_tab(buf, offset)
   if buf:match('^\27%[Z', offset) then
     return {
       { type = 'press',   button = 'tab', alt = false, ctrl = false, shift = true },
@@ -355,7 +531,7 @@ function Parser:read_shift_tab(buf, offset)
   end
 end
 
-function Parser:read_paste(buf, offset)
+function Parser:take_paste(buf, offset)
   -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Bracketed-Paste-Mode
   if not buf:match('^\27%[200~', offset) then
     return nil, offset
@@ -367,7 +543,16 @@ function Parser:read_paste(buf, offset)
   return {{ type = 'paste', text = buf:sub(offset + 6, end_offset - 1) }}, end_offset + 6
 end
 
-function Parser:read_key(buf, offset)
+function Parser:drop_kitty_functional_key(buf, offset)
+  local new_offset = buf:match('^\27%[%d+;%d+:%d[ABCDEFHPQS~]()', offset)
+  if new_offset then
+    return {}, new_offset
+  else
+    return nil, offset
+  end
+end
+
+function Parser:take_key(buf, offset)
   local alt = buf:byte(offset) == 27 and #buf > 1
   local has_codepoint, new_offset = pcall(utf8.offset, buf, 2, offset + (alt and 1 or 0))
   if not has_codepoint then
@@ -384,7 +569,7 @@ function Parser:read_key(buf, offset)
   end
 end
 
-function Parser:read_codepoint(buf, offset)
+function Parser:take_codepoint(buf, offset)
   local has_codepoint, new_offset = pcall(utf8.offset, buf, 2, offset)
   if has_codepoint then
     return {{ type = 'paste', text = buf:sub(offset, new_offset - 1) }}, new_offset
