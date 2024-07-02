@@ -219,7 +219,7 @@ for i = 1, math.huge do
       end
       tty.write(event.button, ' ')
       if event.text then
-        tty.write('“', event.text, '”')
+        tty.write('‘', event.text, '’')
       end
     else
       for k, v in pairs(event) do

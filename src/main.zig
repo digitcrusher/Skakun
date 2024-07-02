@@ -153,6 +153,8 @@ pub fn main() !void {
   vm.requireF("core.tty.system", lua.wrap(@import("core/tty/system.zig").luaopen), false);
   if(target.os.tag == .linux) {
     vm.requireF("core.tty.linux.system", lua.wrap(@import("core/tty/linux/system.zig").luaopen), false);
+  } else if(target.os.tag == .windows) {
+    vm.requireF("core.tty.windows", lua.wrap(@import("core/tty/windows.zig").luaopen), false);
   } else if(target.isBSD()) {
     vm.requireF("core.tty.freebsd.system", lua.wrap(@import("core/tty/freebsd/system.zig").luaopen), false);
   }

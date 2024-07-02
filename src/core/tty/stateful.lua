@@ -23,6 +23,10 @@ elseif core.platform == 'freebsd' then
   unix = require('core.tty.freebsd')
 end
 local utils = require('core.utils')
+local windows
+if core.platform == 'windows' then
+  windows = require('core.tty.windows')
+end
 
 local tty = setmetatable({
   ansi_colors = {
@@ -113,7 +117,7 @@ local tty = setmetatable({
     mouse_shape = true,
     window_title = true,
     window_background = 'true_color',
-    clipboard = true,
+    clipboard = 'remote', -- Must be one of: 'remote', 'local', false.
   },
 
   state = {},
@@ -121,17 +125,15 @@ local tty = setmetatable({
 
 function tty.setup()
   tty.open()
-  tty.input_parser = nil
   if unix then
     local ok
     ok, tty.input_parser = pcall(unix.Kbd.new)
     if ok then
       unix.enable_raw_kbd()
     else
-      tty.input_parser = nil
+      tty.input_parser = InputParser.new()
     end
-  end
-  if not tty.input_parser then
+  else
     tty.input_parser = InputParser.new()
   end
   tty.enable_raw_mode()
@@ -145,10 +147,12 @@ function tty.setup()
   tty.write('\27[?1003h') -- Enable mouse movement events
   tty.write('\27[?1006h') -- Extend the range of mouse coordinates the terminal is able to report
   tty.write('\27]22;>default\27\\', '\27]22;\27\\') -- Push the terminal default onto the pointer shape stack
+  tty.write('\27[22;0t') -- Save the window title on the stack
 end
 
 function tty.restore()
   tty.write('\27[0m')
+  tty.write('\27[23;0t') -- Restore the window title from the stack
   tty.write('\27]22;<\27\\') -- Pop our pointer shape from the stack
   tty.write('\27[?1006l') -- Shrink the range of mouse coordinates to default
   tty.write('\27[?1003l') -- Disable mouse movement events
@@ -326,9 +330,9 @@ function tty.detect_caps()
 
   -- You may have to explicitly enable this: https://github.com/tmux/tmux/wiki/Clipboard
   if xterm >= 238 or tty.getstr('Ms') then
-    tty.cap.clipboard = true
+    tty.cap.clipboard = 'remote'
   else
-    tty.cap.clipboard = false
+    tty.cap.clipboard = 'local'
   end
 
   -- Further reading: https://no-color.org/
@@ -712,10 +716,24 @@ function tty.load_functions()
     function tty.set_window_background() end
   end
 
-  if tty.cap.clipboard then
+  if tty.cap.clipboard == 'remote' then
     function tty.set_clipboard(text)
       -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Operating-System-Commands
       tty.write('\27]52;c;', utils.base64_encode(text), '\27\\')
+    end
+  elseif tty.cap.clipboard == 'local' then
+    function tty.set_clipboard(text)
+      if core.platform == 'windows' then
+        windows.set_clipboard(text)
+      elseif core.platform == 'macos' then
+        io.popen('pbcopy', 'w'):write(text)
+      else
+        -- io.popen fails silently when the program errors out or isn't
+        -- available, so we just try all of them in sequence LOL.
+        io.popen('xclip -selection clipboard', 'w'):write(text)
+        io.popen('xsel --clipboard', 'w'):write(text)
+        io.popen('wl-copy', 'w'):write(text)
+      end
     end
   else
     function tty.set_clipboard() end

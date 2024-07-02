@@ -305,17 +305,16 @@ end
 
 function Parser:take_mouse(buf, offset)
   -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Mouse-Tracking
-  local bits, x, y, event = buf:match('^\27%[<(%d+);(%d+);(%d+)([Mm])', offset)
+  local bits, x, y, event, new_offset = buf:match('^\27%[<(%d+);(%d+);(%d+)([Mm])()', offset)
   if not event then
     return nil, offset
   end
-  offset = offset + #bits + #x + #y + #event + 5
 
   x = tonumber(x)
   y = tonumber(y)
   bits = tonumber(bits)
   if bits & 32 ~= 0 then
-    return {{ type = 'move', x = x, y = y }}, offset
+    return {{ type = 'move', x = x, y = y }}, new_offset
   end
 
   local shift = bits & 4 ~= 0
@@ -333,16 +332,16 @@ function Parser:take_mouse(buf, offset)
     [129] = 'mouse_next',
   })[bits & ~28]
   if not button then
-    return {}, offset
+    return {}, new_offset
   end
 
   if button:find('scroll', 1, true) then
     return {
       { type = 'press',   button = button, alt = alt, ctrl = ctrl, shift = shift, x = x, y = y },
       { type = 'release', button = button, alt = alt, ctrl = ctrl, shift = shift, x = x, y = y },
-    }, offset
+    }, new_offset
   else
-    return {{ type = event == 'M' and 'press' or 'release', button = button, alt = alt, ctrl = ctrl, shift = shift, x = x, y = y }}, offset
+    return {{ type = event == 'M' and 'press' or 'release', button = button, alt = alt, ctrl = ctrl, shift = shift, x = x, y = y }}, new_offset
   end
 end
 
@@ -459,15 +458,15 @@ function Parser:take_functional_key(buf, offset)
 end
 
 function Parser:take_functional_key_with_mods(buf, offset)
-  local a, b, c = buf:match('^\27(%[%d+;)(%d+)(.)', offset)
-  if not c then
-    a, b, c = buf:match('^\27(O)(%d+)(.)', offset)
+  local keycode1, mods, keycode2, new_offset = buf:match('^\27(%[%d+;)(%d+)(.)()', offset)
+  if not new_offset then
+    keycode1, mods, keycode2, new_offset = buf:match('^\27(O)(%d+)(.)()', offset)
   end
-  if not c then
+  if not new_offset then
     return nil, offset
   end
 
-  local mods = tonumber(b) - 1
+  mods = tonumber(mods) - 1
   local shift = mods & 1 ~= 0
   local alt = mods & 2 ~= 0
   local ctrl = mods & 4 ~= 0
@@ -508,13 +507,13 @@ function Parser:take_functional_key_with_mods(buf, offset)
     ['O S'] = 'f4',
     -- On Kitty:
     ['[13; ~'] = 'f3',
-  })[a .. ' ' .. c]
+  })[keycode1 .. ' ' .. keycode2]
 
   if button then
     return {
       { type = 'press',   button = button, alt = alt, ctrl = ctrl, shift = shift },
       { type = 'release', button = button, alt = alt, ctrl = ctrl, shift = shift },
-    }, offset + 1 + #a + #b + #c
+    }, new_offset
   else
     return nil, offset
   end

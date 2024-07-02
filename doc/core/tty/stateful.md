@@ -46,11 +46,12 @@ which includes all of the text and screen attributes functions.
 
 The table of the current terminal's capabilities, i.e. it contains an entry for
 every text and screen attribute. Color caps are `'true_color'`, `'ansi'` or
-`false`, everything else is `true` or `false`. You may modify this table and
-call `load_functions`, if the automatic capability detection contraption fails
-and Skakun, for example, doesn't display colors or undercurls. You may and
-*should* also use this table to vary the behaviour of your code to provide the
-most suitable visuals, if you are a plugin developer or just a tinkerer.
+`false`; `clipboard` is `'remote'`, `'local'` or `false`; everything else is
+`true` or `false`. You may modify this table and call `load_functions`, if the
+automatic capability detection contraption fails and Skakun, for example,
+doesn't display colors or undercurls. You may and *should* also use this table
+to vary the behaviour of your code to provide the most suitable visuals, if you
+are a plugin developer or just a tinkerer.
 
 ## Screen contents and cursor movement
 
