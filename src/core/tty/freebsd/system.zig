@@ -18,13 +18,19 @@ const std = @import("std");
 const target = @import("builtin").target;
 const lua = @import("ziglua");
 const c = @cImport({
-  @cInclude("errno.h");
   @cInclude("dev/evdev/input-event-codes.h");
   @cInclude("string.h");
   @cInclude("sys/consio.h");
   @cInclude("sys/kbio.h");
 });
 const tty = @import("../system.zig");
+
+fn ioctl(request: anytype, arg: anytype) c_int {
+  return std.c.ioctl(tty.file.handle, request, arg);
+}
+fn strerror() [*:0]const u8 {
+  return c.strerror(std.c._errno().*);
+}
 
 // Ioctl reference:
 // - https://cgit.freebsd.org/src/tree/sys/sys/kbio.h
@@ -41,20 +47,17 @@ fn enable_raw_kbd(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
   if(original_kbmode != null) return 0;
   var kbmode: c_int = undefined;
-  if(std.c.ioctl(tty.file.handle, c.KDGKBMODE, &kbmode) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
-  if(std.c.ioctl(tty.file.handle, c.KDSKBMODE, c.K_CODE) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+  if(ioctl(c.KDGKBMODE, &kbmode) < 0) vm.raiseErrorStr("failed to get original keyboard mode: %s", .{strerror()});
+  if(ioctl(c.KDSKBMODE, c.K_CODE) < 0) vm.raiseErrorStr("failed to set raw keyboard mode: %s", .{strerror()});
   original_kbmode = kbmode;
-  vm.pushBoolean(true);
-  return 1;
+  return 0;
 }
 
 fn disable_raw_kbd(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
   if(original_kbmode) |x| {
-    if(std.c.ioctl(tty.file.handle, c.KDSKBMODE, x) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+    if(ioctl(c.KDSKBMODE, x) < 0) vm.raiseErrorStr("%s", .{strerror()});
     original_kbmode = null;
-    vm.pushBoolean(true);
-    return 1;
   }
   return 0;
 }
@@ -63,7 +66,7 @@ fn get_keymap(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
 
   var keymap: c.keymap = undefined;
-  if(std.c.ioctl(tty.file.handle, c.GIO_KEYMAP, &keymap) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+  if(ioctl(c.GIO_KEYMAP, &keymap) < 0) vm.raiseErrorStr("%s", .{strerror()});
 
   vm.createTable(keymap.n_keys, 0);
   for(0 .. keymap.n_keys) |keycode| {
@@ -84,7 +87,7 @@ fn get_accentmap(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
 
   var accentmap: c.accentmap = undefined;
-  if(std.c.ioctl(tty.file.handle, c.GIO_DEADKEYMAP, &accentmap) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+  if(ioctl(c.GIO_DEADKEYMAP, &accentmap) < 0) vm.raiseErrorStr("%s", .{strerror()});
 
   vm.createTable(accentmap.n_accs, 0);
   for(0 .. accentmap.n_accs) |accent| {
@@ -105,33 +108,29 @@ fn get_accentmap(vm: *lua.Lua) i32 {
 
 fn set_kbd_locks(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
-  if(std.c.ioctl(tty.file.handle, c.KDSKBSTATE, vm.checkInteger(1)) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+  if(ioctl(c.KDSKBSTATE, vm.checkInteger(1)) < 0) vm.raiseErrorStr("%s", .{strerror()});
   return 0;
 }
 
 fn get_kbd_locks(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
   var result: c_int = undefined;
-  if(std.c.ioctl(tty.file.handle, c.KDGKBSTATE, &result) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+  if(ioctl(c.KDGKBSTATE, &result) < 0) vm.raiseErrorStr("%s", .{strerror()});
   vm.pushInteger(result);
   return 1;
 }
 
 fn set_active_vc(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
-  if(std.c.ioctl(tty.file.handle, c.VT_ACTIVATE, vm.checkInteger(1)) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+  if(ioctl(c.VT_ACTIVATE, vm.checkInteger(1)) < 0) vm.raiseErrorStr("%s", .{strerror()});
   return 0;
 }
 
-// When switching to the next or previous VC, FreeBSD doesn't just choose
-// active_vc ± 1, but rather selects the nearest "opened" VC. Unfortunately, we
-// ourselves cannot query whether a given VC fits the label. Anyways, VCs are
-// *usually* allocated sequentially, so who cares?
 fn get_active_vc(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
   var result: c_int = undefined;
   // VT_GETINDEX returns the console of the file descriptor and not the active console.
-  if(std.c.ioctl(tty.file.handle, c.VT_GETACTIVE, &result) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+  if(ioctl(c.VT_GETACTIVE, &result) < 0) vm.raiseErrorStr("%s", .{strerror()});
   vm.pushInteger(result);
   return 1;
 }
@@ -150,9 +149,9 @@ const funcs = [_]lua.FnReg{
 pub fn luaopen(vm: *lua.Lua) i32 {
   vm.newLib(&funcs);
 
-  // All of the 104 keys of a standard US layout Windows keyboard. The FreeBSD
-  // peculiarities were picked out with the help of misc/kbdscan. Unfortunately,
-  // FreeBSD didn't care enough to put their keycodes in a header file.
+  // The FreeBSD peculiarities were picked out with the help of misc/kbdscan.
+  // Unfortunately, FreeBSD didn't care enough to put their keycodes in a header
+  // file.
   const keycodes = [_]struct {comptime_int, []const u8}{
     .{c.KEY_ESC, "escape"},
     .{c.KEY_F1, "f1"},

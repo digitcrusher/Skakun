@@ -22,6 +22,7 @@ if core.platform == 'linux' then
 elseif core.platform == 'freebsd' then
   unix = require('core.tty.freebsd')
 end
+local system = require('core.tty.system')
 local utils = require('core.utils')
 local windows
 if core.platform == 'windows' then
@@ -101,6 +102,20 @@ local tty = setmetatable({
     'zoom_out',
   },
 
+  -- All of the 104 keys of a standard US layout Windows keyboard
+  buttons = {
+    'escape', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10', 'f11', 'f12', 'print_screen', 'scroll_lock', 'pause',
+    'backtick', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'minus', 'equal', 'backspace',
+    'tab', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', 'left_bracket', 'right_bracket', 'backslash',
+    'caps_lock', 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'semicolon', 'apostrophe', 'enter',
+    'left_shift', 'z', 'x', 'c', 'v', 'b', 'n', 'm', 'comma', 'dot', 'slash', 'right_shift',
+    'left_ctrl', 'left_super', 'left_alt', 'space', 'right_alt', 'right_super', 'menu', 'right_ctrl',
+    'insert', 'delete', 'home', 'end', 'page_up', 'page_down',
+    'up', 'left', 'down', 'right',
+    'num_lock', 'kp_divide', 'kp_multiply', 'kp_subtract', 'kp_add', 'kp_enter', 'kp_1', 'kp_2', 'kp_3', 'kp_4', 'kp_5', 'kp_6', 'kp_7', 'kp_8', 'kp_9', 'kp_0', 'kp_decimal',
+    'mouse_left', 'mouse_middle', 'mouse_right', 'scroll_up', 'scroll_down', 'scroll_left', 'scroll_right', 'mouse_prev', 'mouse_next',
+  },
+
   -- Reminder: color caps must be one of: 'true_color', 'ansi', false.
   cap = {
     foreground = 'true_color',
@@ -121,7 +136,7 @@ local tty = setmetatable({
   },
 
   state = {},
-}, { __index = require('core.tty.system') })
+}, { __index = system })
 
 function tty.setup()
   tty.open()
@@ -193,7 +208,11 @@ function tty.detect_caps()
   tty.flush()
   if tty.read():match('^\27P[01]%+r.*\27\\$') then -- The terminal has replied with a well-formed answer.
     -- Flags don't work over XTGETTCAP, in kitty at least.
-    function tty.getnum(capname)
+    function tty.getnum(capname, term)
+      if term ~= nil then
+        return system.getnum(capname, term)
+      end
+
       tty.write('\27P+q', utils.hex_encode(capname), '\27\\')
       tty.read_events()
       tty.flush()
@@ -204,7 +223,11 @@ function tty.detect_caps()
       return result
     end
 
-    function tty.getstr(capname)
+    function tty.getstr(capname, term)
+      if term ~= nil then
+        return system.getstr(capname, term)
+      end
+
       tty.write('\27P+q', utils.hex_encode(capname), '\27\\')
       tty.read_events()
       tty.flush()
@@ -344,19 +367,35 @@ function tty.detect_caps()
   end
 end
 
-function tty.clear()
-  tty.write('\27[2J')
+function tty.sync_begin()
+  tty.write('\27[?2026h')
 end
 
-function tty.move_to(x, y)
-  tty.write('\27[', y, ';', x, 'H')
+function tty.sync_end()
+  tty.write('\27[?2026l')
+end
+
+function tty.clear()
+  tty.write('\27[2J')
 end
 
 function tty.reset()
   tty.write('\27[0m')
   tty.set_hyperlink()
   tty.set_cursor()
+  tty.set_cursor_shape()
+  tty.set_window_background()
   tty.state = {}
+end
+
+function tty.move_to(x, y)
+  if x and y then
+    tty.write('\27[', y, ';', x, 'H')
+  elseif x then
+    tty.write('\27[', x, 'G')
+  elseif y then
+    tty.write('\27[', y, 'd')
+  end
 end
 
 function tty.load_functions()
@@ -394,10 +433,13 @@ function tty.load_functions()
         -- predominant method due to misunderstandings and the passage of time.
         -- Further reading: https://chadaustin.me/2024/01/truecolor-terminal-emacs/
         tty.write('\27[38;2;', red, ';', green, ';', blue, 'm')
+        tty.state.foreground = { red = red, green = green, blue = blue }
       elseif red then
         tty.write('\27[', ansi_color_fg_codes[red], 'm')
+        tty.state.foreground = red
       else
         tty.write('\27[39m')
+        tty.state.foreground = nil
       end
     end
   elseif tty.cap.foreground == 'ansi' then
@@ -407,9 +449,11 @@ function tty.load_functions()
         -- for the non-bright colors do not reset the brightness turned on by
         -- the bright colors.
         tty.write('\27[22;', ansi_color_fg_codes[red], 'm')
+        tty.state.foreground = red
       else
         -- The above also applies to setting the default foreground color.
         tty.write('\27[22;39m')
+        tty.state.foreground = nil
       end
     end
   else
@@ -440,10 +484,13 @@ function tty.load_functions()
         -- Reference: https://github.com/termstandard/colors
         -- Same story with semicolons vs colons as before.
         tty.write('\27[48;2;', red, ';', green, ';', blue, 'm')
+        tty.state.background = { red = red, green = green, blue = blue }
       elseif red then
         tty.write('\27[', ansi_color_bg_codes[red], 'm')
+        tty.state.background = red
       else
         tty.write('\27[49m')
+        tty.state.background = nil
       end
     end
   elseif tty.cap.background == 'ansi' then
@@ -451,8 +498,10 @@ function tty.load_functions()
       if red and not blue then
         -- The bright colors don't work for the background in the Linux console.
         tty.write('\27[', ansi_color_bg_codes[red], 'm')
+        tty.state.background = red
       else
         tty.write('\27[49m')
+        tty.state.background = nil
       end
     end
   else
@@ -524,6 +573,7 @@ function tty.load_functions()
       if blue then
         -- Same semicolon story as with foreground and background.
         tty.write('\27[58;2;', red, ';', green, ';', blue, 'm')
+        tty.state.underline_color = { red = red, green = green, blue = blue }
       elseif red then
         -- Sadly, there appears to be no escape sequence for ANSI underline
         -- colors. We have to fetch the RGB value from the terminal.
@@ -559,8 +609,10 @@ function tty.load_functions()
         -- Source: man 3 XParseColor
         local red, green, blue = tty.read():match('^\27]4;%d*;rgb:(%x%x)%x*/(%x%x)%x*/(%x%x)%x*\27?\\?\7?$')
         tty.set_underline_color(tonumber(red, 16), tonumber(green, 16), tonumber(blue, 16))
+        tty.state.underline_color = red
       else
         tty.write('\27[59m')
+        tty.state.underline_color = nil
       end
     end
   else
@@ -599,6 +651,7 @@ function tty.load_functions()
       -- percent-encode all bytes outside of the 32-126 range but who cares?
       -- *It works on my machine.* ¯\_(ツ)_/¯
       tty.write('\27]8;;', (url or ''):gsub('\27', '%%1b'), '\27\\')
+      tty.state.url = url
     end
   else
     function tty.set_hyperlink() end
@@ -613,6 +666,7 @@ function tty.load_functions()
       else
         tty.write('\27[?25l')
       end
+      tty.state.cursor = is_visible
     end
   else
     function tty.set_cursor() end
@@ -626,9 +680,11 @@ function tty.load_functions()
           tty.write('\27[?8c')
         elseif name == 'slab' then
           tty.write('\27[?2c')
+          -- No bar cursor available, sorry :(
         else
           tty.write('\27[?0c')
         end
+        tty.state.cursor_shape = name
       end
     else
       function tty.set_cursor_shape(name)
@@ -643,6 +699,7 @@ function tty.load_functions()
         else
           tty.write('\27[ q')
         end
+        tty.state.cursor_shape = name
       end
     end
   else
@@ -656,6 +713,7 @@ function tty.load_functions()
       tty.write('\27]22;', (name or ''):gsub('_', '-'), '\27\\')
       -- They don't work on xterm by the way, which has its own set of pointer
       -- shape names: https://invisible-island.net/xterm/manpage/xterm.html#VT100-Widget-Resources:pointerShape
+      tty.state.mouse_shape = name
     end
   else
     function tty.set_mouse_shape() end
@@ -669,6 +727,7 @@ function tty.load_functions()
       else
         tty.write('\27]2;', (text or ''):gsub('\27', ''), '\27\\')
       end
+      tty.state.window_title = text
     end
   else
     function tty.set_window_title() end
@@ -682,6 +741,7 @@ function tty.load_functions()
         -- Fun fact: xterm-compatibles accept X11 color names here, which you
         -- can find in /etc/X11/rgb.txt.
         tty.write(string.format('\27]11;#%02x%02x%02x\27\\', red, green, blue))
+        tty.state.window_background = { red = red, green = green, blue = blue }
       elseif red then
         -- We have to fetch the ANSI color's RGB value from the terminal because
         -- there's no other way.
@@ -708,8 +768,10 @@ function tty.load_functions()
         tty.flush()
         -- Konsole and st send BEL instead of ST at the end for some reason.
         tty.write('\27]11;', tty.read():match('^\27]4;%d*;(.*)\27?\\?\7?$'), '\27\\')
+        tty.state.window_background = red
       else
         tty.write('\27]111;\27\\')
+        tty.state.window_background = nil
       end
     end
   else
@@ -719,20 +781,28 @@ function tty.load_functions()
   if tty.cap.clipboard == 'remote' then
     function tty.set_clipboard(text)
       -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Operating-System-Commands
-      tty.write('\27]52;c;', utils.base64_encode(text), '\27\\')
+      tty.write('\27]52;c;', utils.base64_encode(text or ''), '\27\\')
     end
   elseif tty.cap.clipboard == 'local' then
     function tty.set_clipboard(text)
       if core.platform == 'windows' then
         windows.set_clipboard(text)
       elseif core.platform == 'macos' then
-        io.popen('pbcopy', 'w'):write(text)
+        pipe = io.popen('pbcopy', 'w')
+        pipe:write(text or '')
+        pipe:close()
       else
         -- io.popen fails silently when the program errors out or isn't
         -- available, so we just try all of them in sequence LOL.
-        io.popen('xclip -selection clipboard', 'w'):write(text)
-        io.popen('xsel --clipboard', 'w'):write(text)
-        io.popen('wl-copy', 'w'):write(text)
+        for _, cmd in ipairs({
+          'xclip -selection clipboard',
+          'xsel --clipboard',
+          'wl-copy',
+        }) do
+          pipe = io.popen(cmd, 'w')
+          pipe:write(text or '')
+          pipe:close()
+        end
       end
     end
   else

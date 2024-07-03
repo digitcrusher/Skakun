@@ -1,32 +1,42 @@
 # core.tty.system
 
+    tty = require('core.tty.system')
+
 A low-level layer that contains terminal I/O functions and FFI bindings to
 various libraries such as termios and terminfo.
 
+## Initialization
+
+    tty.open()
+
+Opens the terminal pseudofile(s) (`/dev/tty` or `CONIN$`/`CONOUT$`) for reading and writing.
+
+    tty.close()
+
+Closes it/them.
+
+    tty.enable_raw_mode()
+
+Enables raw mode using `cfmakeraw` and makes `read` non-blocking. Explanation of
+raw mode: https://en.wikipedia.org/wiki/Terminal_mode
+
+    tty.disable_raw_mode()
+
+Disables raw mode by bringing the terminal back to its original `termios` state.
+
 ## Input and output
 
-    write(strings...)
+    tty.write(strings...)
 
-Writes a series of strings to the terminal with buffering.
+Writes a series of strings to the terminal with full buffering.
 
-    flush()
+    tty.flush()
 
 Flushes the buffered write data and immediately sends it to the terminal.
 
-    read([count])
+    tty.read()
 
-Reads up to `count` (unlimited if omitted) bytes from the terminal.
-
-    enable_raw_mode()
-
-Enables raw mode using `cfmakeraw`, makes `read` not block and time out after
-100ms, and sets stdout to full buffering. Explanation of raw mode:
-https://en.wikipedia.org/wiki/Terminal_mode
-
-    disable_raw_mode()
-
-Disables raw mode by bringing the terminal back to its original `termios` state
-and enabling line buffering for stdout.
+Reads all pending bytes from the terminal.
 
 ## Terminfo
 
@@ -41,20 +51,20 @@ See `man 5 terminfo` for more information on terminfo. Note that the list of
 capabilities in that man page does not contain any of the commonly-used
 extensions, such as `Ss`.
 
-    getflag(capname, [term])
+    bool = tty.getflag(capname, [term])
 
-Returns a boolean signalling the presence of a terminal capability in its
+Returns a boolean signalling the presence of a terminal flag capability in its
 terminfo entry, or `nil` if the capname is unrecognized.
 
-    getnum(capname, [term])
+    num = tty.getnum(capname, [term])
 
-Returns the value of a terminal's numeric capability, or `false` if it's absent
-from the terminal's terminfo entry, or `nil` if the capname is unrecognized.
+Gets the numeric capability, or `false` if it's absent from the terminal's
+terminfo entry, or `nil` if the capname is unrecognized.
 
-    getstr(capname, [term])
+    string = tty.getstr(capname, [term])
 
-Returns the value of a terminal's string capability, or `false` if it's absent
-from the terminal's terminfo entry, or `nil` if the capname is unrecognized.
+Gets the string capability, or `false` if it's absent from the terminal's
+terminfo entry, or `nil` if the capname is unrecognized.
 
 Alas, the terminfo database has a reputation of not being the most reliable nor
 up-to-date and sadly there's no better widespread way to query the terminal's

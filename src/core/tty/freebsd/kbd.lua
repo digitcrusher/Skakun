@@ -25,18 +25,21 @@ local c = system
 
 local Kbd = {
   keycodes = system.keycodes,
-  buf = '',
-  active_accent = nil,
 }
 
 function Kbd.new()
   return setmetatable({
     keycodes = setmetatable({}, { __index = Kbd.keycodes }),
+
     keymap = system.get_keymap(),
     accentmap = system.get_accentmap(),
+
+    buf = '',
     is_pressed = {},
+
     state = system.get_kbd_locks(),
     last_action = {},
+    active_accent = nil,
   }, { __index = Kbd })
 end
 
@@ -190,6 +193,10 @@ function Kbd:handle_keycode(keycode, is_release)
 
     self.active_accent = nil
 
+    -- When switching to the next or previous VC, FreeBSD doesn't just choose
+    -- active_vc ± 1, but rather selects the nearest "opened" VC. Unfortunately,
+    -- we ourselves cannot query whether a given VC fits the label. Anyways, VCs
+    -- are *usually* allocated sequentially, so who cares?
     if c.F_SCR <= action and action <= c.L_SCR then
       system.set_active_vc(action - c.F_SCR + 1)
     elseif action == c.NEXT then

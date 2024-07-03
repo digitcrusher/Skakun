@@ -20,26 +20,32 @@ const c = @cImport({
   @cDefine("WIN32_LEAN_AND_MEAN", {});
   @cInclude("windows.h");
 });
-const GetLastError = std.os.windows.kernel32.GetLastError;
+
+fn get_last_error() [*:0]const u8 {
+  return @errorName(std.os.windows.kernel32.GetLastError()).ptr;
+}
 
 fn set_clipboard(vm: *lua.Lua) i32 {
   const maybe_text = vm.optString(1);
 
-  if(c.OpenClipboard(null) == 0) vm.raiseErrorStr("failed to open clipboard: %s", .{@errorName(GetLastError()).ptr});
+  if(c.OpenClipboard(null) == 0) vm.raiseErrorStr("failed to open clipboard: %s", .{get_last_error()});
   defer _ = c.CloseClipboard();
 
   if(c.EmptyClipboard() == 0) {
     _ = c.CloseClipboard(); // defer doesn't work because of Lua's longjmp.
-    vm.raiseErrorStr("failed to empty clipboard: %s", .{@errorName(GetLastError()).ptr});
+    vm.raiseErrorStr("failed to empty clipboard: %s", .{get_last_error()});
   }
 
   if(maybe_text == null) return 0;
   const text = maybe_text.?;
 
+  // The UTF-8 encoding is always at least as long as the UTF-16 one, so we're
+  // in the clear here. The memory must be allocated using GlobalAlloc with
+  // GMEM_MOVEABLE as per: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setclipboarddata
   const copy_len = text.len + 1 + std.mem.count(u8, text, "\n");
   const copy_handle = c.GlobalAlloc(c.GMEM_MOVEABLE, 2 * copy_len) orelse {
     _ = c.CloseClipboard();
-    vm.raiseErrorStr("failed to allocate copy: %s", .{@errorName(GetLastError()).ptr});
+    vm.raiseErrorStr("failed to allocate copy: %s", .{get_last_error()});
   };
   const copy = @as([*]u16, @alignCast(@ptrCast(c.GlobalLock(copy_handle))))[0 .. copy_len];
   var i: usize = 0;
@@ -48,8 +54,16 @@ fn set_clipboard(vm: *lua.Lua) i32 {
     if(text[i] == '\n') {
       j += std.unicode.utf8ToUtf16Le(copy[j ..], "\r") catch unreachable;
     }
-    const bytec = std.unicode.utf8ByteSequenceLength(text[i]) catch vm.raiseErrorStr("text is malformed UTF-8", .{});
-    j += std.unicode.utf8ToUtf16Le(copy[j ..], text[i .. i + bytec]) catch vm.raiseErrorStr("text is malformed UTF-8", .{});
+    const bytec = std.unicode.utf8ByteSequenceLength(text[i]) catch {
+      _ = c.GlobalFree(copy_handle);
+      _ = c.CloseClipboard();
+      vm.raiseErrorStr("text is malformed UTF-8", .{});
+    }
+    j += std.unicode.utf8ToUtf16Le(copy[j ..], text[i .. i + bytec]) catch {
+      _ = c.GlobalFree(copy_handle);
+      _ = c.CloseClipboard();
+      vm.raiseErrorStr("text is malformed UTF-8", .{});
+    }
     i += bytec;
   }
   j += std.unicode.utf8ToUtf16Le(copy[j ..], "\x00") catch unreachable;
@@ -58,7 +72,7 @@ fn set_clipboard(vm: *lua.Lua) i32 {
   if(c.SetClipboardData(c.CF_UNICODETEXT, copy_handle) == null) {
     _ = c.GlobalFree(copy_handle);
     _ = c.CloseClipboard();
-    vm.raiseErrorStr("failed to set clipboard: %s", .{@errorName(GetLastError()).ptr});
+    vm.raiseErrorStr("failed to set clipboard: %s", .{get_last_error()});
   }
 
   return 0;

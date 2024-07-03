@@ -129,14 +129,6 @@ pub fn main() !void {
   try vm.getSubtable(lua.registry_index, "_LOADED");
   vm.getSubtable(-1, "core") catch {};
 
-  _ = vm.pushString(build.version);
-  vm.setField(-2, "version");
-
-  const exe_dir = try std.fs.selfExeDirPathAlloc(allocator);
-  defer allocator.free(exe_dir);
-  _ = vm.pushString(exe_dir);
-  vm.setField(-2, "exe_dir");
-
   if(target.os.tag == .linux) {
     _ = vm.pushString("linux");
   } else if(target.os.tag == .windows) {
@@ -150,6 +142,14 @@ pub fn main() !void {
   }
   vm.setField(-2, "platform");
 
+  _ = vm.pushString(build.version);
+  vm.setField(-2, "version");
+
+  const exe_dir = try std.fs.selfExeDirPathAlloc(allocator);
+  defer allocator.free(exe_dir);
+  _ = vm.pushString(exe_dir);
+  vm.setField(-2, "exe_dir");
+
   vm.requireF("core.tty.system", lua.wrap(@import("core/tty/system.zig").luaopen), false);
   if(target.os.tag == .linux) {
     vm.requireF("core.tty.linux.system", lua.wrap(@import("core/tty/linux/system.zig").luaopen), false);
@@ -161,9 +161,12 @@ pub fn main() !void {
 
   try vm.doString(
     \\local core = require('core')
-    \\function core.cleanup() end
+    \\core.cleanups = {}
     \\xpcall(
     \\  function()
+    \\    function core.add_cleanup(func)
+    \\      core.cleanups[#core.cleanups + 1] = func
+    \\    end
     \\    if core.platform == 'windows' then
     \\      -- %APPDATA% differs from %LOCALAPPDATA% in that it is synced
     \\      -- across devices.
@@ -187,10 +190,14 @@ pub fn main() !void {
     \\    package.path = core.config_dir .. '/?.lua;' .. package.path
     \\    package.cpath = core.config_dir .. '/?.so;' .. package.cpath
     \\    require('user')
-    \\    core.cleanup()
+    \\    for i = #core.cleanups, 1, -1, do
+    \\      core.cleanups[i]()
+    \\    end
     \\  end,
     \\  function(err)
-    \\    pcall(core.cleanup)
+    \\    for i = #core.cleanups, 1, -1, do
+    \\      pcall(core.cleanups[i])
+    \\    end
     \\    print(debug.traceback(err, 2))
     \\    os.exit(1)
     \\  end

@@ -18,7 +18,6 @@ const std = @import("std");
 const target = @import("builtin").target;
 const lua = @import("ziglua");
 const c = @cImport({
-  @cInclude("errno.h");
   @cInclude("linux/input-event-codes.h");
   @cInclude("linux/kd.h");
   @cInclude("linux/keyboard.h");
@@ -27,6 +26,13 @@ const c = @cImport({
   @cInclude("string.h");
 });
 const tty = @import("../system.zig");
+
+fn ioctl(request: anytype, arg: anytype) c_int {
+  return std.c.ioctl(tty.file.handle, request, arg);
+}
+fn strerror() [*:0]const u8 {
+  return c.strerror(std.c._errno().*);
+}
 
 // Ioctl reference:
 // - https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/include/uapi/linux/kd.h
@@ -46,20 +52,17 @@ fn enable_raw_kbd(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
   if(original_kbmode != null) return 0;
   var kbmode: c_int = undefined;
-  if(std.c.ioctl(tty.file.handle, c.KDGKBMODE, &kbmode) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
-  if(std.c.ioctl(tty.file.handle, c.KDSKBMODE, c.K_MEDIUMRAW) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+  if(ioctl(c.KDGKBMODE, &kbmode) < 0) vm.raiseErrorStr("failed to get original keyboard mode: %s", .{strerror()});
+  if(ioctl(c.KDSKBMODE, c.K_MEDIUMRAW) < 0) vm.raiseErrorStr("failed to set raw keyboard mode: %s", .{strerror()});
   original_kbmode = kbmode;
-  vm.pushBoolean(true);
-  return 1;
+  return 0;
 }
 
 fn disable_raw_kbd(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
   if(original_kbmode) |x| {
-    if(std.c.ioctl(tty.file.handle, c.KDSKBMODE, x) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+    if(ioctl(c.KDSKBMODE, x) < 0) vm.raiseErrorStr("%s", .{strerror()});
     original_kbmode = null;
-    vm.pushBoolean(true);
-    return 1;
   }
   return 0;
 }
@@ -78,13 +81,13 @@ fn get_keymap(vm: *lua.Lua) i32 {
       .kb_index = 0, // This has to be zero, otherwise Linux will return K_HOLE instead of K_NOSUCHMAP.
       .kb_value = undefined,
     };
-    if(std.c.ioctl(tty.file.handle, c.KDGKBENT, &intercom) < 0) vm.raiseErrorStr("%s at table %d, index %d", .{c.strerror(std.c._errno().*), intercom.kb_table, intercom.kb_index});
+    if(ioctl(c.KDGKBENT, &intercom) < 0) vm.raiseErrorStr("%s at table %d, index %d", .{strerror(), intercom.kb_table, intercom.kb_index});
     if(intercom.kb_value == c.K_NOSUCHMAP) continue;
 
     vm.createTable(c.NR_KEYS, 0);
     for(0 .. c.NR_KEYS) |keycode| {
       intercom.kb_index = @intCast(keycode);
-      if(std.c.ioctl(tty.file.handle, c.KDGKBENT, &intercom) < 0) vm.raiseErrorStr("%s at table %d, index %d", .{c.strerror(std.c._errno().*), intercom.kb_table, intercom.kb_index});
+      if(ioctl(c.KDGKBENT, &intercom) < 0) vm.raiseErrorStr("%s at table %d, index %d", .{strerror(), intercom.kb_table, intercom.kb_index});
       if(intercom.kb_value == c.K_HOLE) continue;
       vm.pushInteger(intercom.kb_value);
       vm.setIndex(-2, intercom.kb_index);
@@ -98,7 +101,7 @@ fn get_accentmap(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
 
   var accentmap: c.kbdiacrsuc = undefined;
-  if(std.c.ioctl(tty.file.handle, c.KDGKBDIACRUC, &accentmap) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+  if(ioctl(c.KDGKBDIACRUC, &accentmap) < 0) vm.raiseErrorStr("%s", .{strerror()});
 
   vm.newTable();
   for(0 .. accentmap.kb_cnt) |idx| {
@@ -113,22 +116,22 @@ fn get_accentmap(vm: *lua.Lua) i32 {
   return 1;
 }
 
-fn set_kbd_leds(vm: *lua.Lua) i32 {
+fn set_kbd_locks(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
   var state: c_ulong = 0;
   if(vm.toBoolean(1)) state |= c.LED_CAP;
   if(vm.toBoolean(2)) state |= c.LED_NUM;
   if(vm.toBoolean(3)) state |= c.LED_SCR;
   // KDSKBLED has more semantic meaning than KDSETLED.
-  if(std.c.ioctl(tty.file.handle, c.KDSKBLED, state) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+  if(ioctl(c.KDSKBLED, state) < 0) vm.raiseErrorStr("%s", .{strerror()});
   return 0;
 }
 
-fn get_kbd_leds(vm: *lua.Lua) i32 {
+fn get_kbd_locks(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
   var state: c_char = undefined;
   // KDGKBLED has more semantic meaning than KDGETLED.
-  if(std.c.ioctl(tty.file.handle, c.KDGKBLED, &state) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+  if(ioctl(c.KDGKBLED, &state) < 0) vm.raiseErrorStr("%s", .{strerror()});
   vm.pushBoolean(state & c.LED_CAP != 0);
   vm.pushBoolean(state & c.LED_NUM != 0);
   vm.pushBoolean(state & c.LED_SCR != 0);
@@ -137,20 +140,15 @@ fn get_kbd_leds(vm: *lua.Lua) i32 {
 
 fn set_active_vc(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
-  if(std.c.ioctl(tty.file.handle, c.VT_ACTIVATE, vm.checkInteger(1)) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+  if(ioctl(c.VT_ACTIVATE, vm.checkInteger(1)) < 0) vm.raiseErrorStr("%s", .{strerror()});
   return 0;
 }
 
-// When switching to the next or previous VC, Linux doesn't just choose
-// active_vc ± 1, but rather selects the nearest "allocated" VC. Unfortunately,
-// we ourselves cannot query whether a given VC fits the label. Linux does have
-// VT_GETSTATE but it only works for the first 16 VCs, which is kind of rubbish.
-// Anyways, VCs are *usually* allocated sequentially, so who cares?
 fn get_active_vc(vm: *lua.Lua) i32 {
   if(!tty.is_open) vm.raiseErrorStr("tty is closed", .{});
   const linux_is_wack: c_char = c.TIOCL_GETFGCONSOLE;
-  const result = std.c.ioctl(tty.file.handle, std.os.linux.T.IOCLINUX, &linux_is_wack);
-  if(result < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+  const result = ioctl(std.os.linux.T.IOCLINUX, &linux_is_wack);
+  if(result < 0) vm.raiseErrorStr("%s", .{strerror()});
   vm.pushInteger(result + 1);
   return 1;
 }
@@ -160,8 +158,8 @@ const funcs = [_]lua.FnReg{
   .{ .name = "disable_raw_kbd", .func = lua.wrap(disable_raw_kbd) },
   .{ .name = "get_keymap", .func = lua.wrap(get_keymap) },
   .{ .name = "get_accentmap", .func = lua.wrap(get_accentmap) },
-  .{ .name = "set_kbd_leds", .func = lua.wrap(set_kbd_leds) },
-  .{ .name = "get_kbd_leds", .func = lua.wrap(get_kbd_leds) },
+  .{ .name = "set_kbd_locks", .func = lua.wrap(set_kbd_locks) },
+  .{ .name = "get_kbd_locks", .func = lua.wrap(get_kbd_locks) },
   .{ .name = "set_active_vc", .func = lua.wrap(set_active_vc) },
   .{ .name = "get_active_vc", .func = lua.wrap(get_active_vc) },
 };
@@ -169,7 +167,6 @@ const funcs = [_]lua.FnReg{
 pub fn luaopen(vm: *lua.Lua) i32 {
   vm.newLib(&funcs);
 
-  // All of the 104 keys of a standard US layout Windows keyboard
   const keycodes = [_]struct {comptime_int, []const u8}{
     .{c.KEY_ESC, "escape"},
     .{c.KEY_F1, "f1"},

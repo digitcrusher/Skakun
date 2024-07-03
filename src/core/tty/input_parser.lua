@@ -14,7 +14,19 @@
 -- You should have received a copy of the GNU General Public License
 -- along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-local Parser = {
+local InputParser = {
+  dispatch_list = {
+    'take_mouse',
+    'take_kitty_key',
+    'take_functional_key',
+    'take_functional_key_with_mods',
+    'take_shift_tab',
+    'take_paste',
+    'drop_kitty_functional_key',
+    'take_key',
+    'take_codepoint',
+  },
+
   keymap = {
     [  0] = { button = 'space', ctrl = true },
     [  1] = { button = 'a', ctrl = true },
@@ -248,19 +260,20 @@ local Parser = {
     [57416] = 'kp_decimal',
     [57426] = 'kp_decimal',
   },
-
-  buf = '',
 }
 
-function Parser.new()
+function InputParser.new()
   return setmetatable({
-    keymap = setmetatable({}, { __index = Parser.keymap }),
-    kitty_keycodes = setmetatable({}, { __index = Parser.kitty_keycodes }),
+    dispatch_list = setmetatable({}, { __index = InputParser.dispatch_list }),
+    keymap = setmetatable({}, { __index = InputParser.keymap }),
+    kitty_keycodes = setmetatable({}, { __index = InputParser.kitty_keycodes }),
+
+    buf = '',
     is_pressed = {},
-  }, { __index = Parser })
+  }, { __index = InputParser })
 end
 
-function Parser:feed(string)
+function InputParser:feed(string)
   self.buf = self.buf .. string
 
   local result = {}
@@ -268,18 +281,8 @@ function Parser:feed(string)
   local i = 1
   while i <= #self.buf do
     local events
-    for _, func in ipairs({
-      self.take_mouse,
-      self.take_kitty_key,
-      self.take_functional_key,
-      self.take_functional_key_with_mods,
-      self.take_shift_tab,
-      self.take_paste,
-      self.drop_kitty_functional_key,
-      self.take_key,
-      self.take_codepoint,
-    }) do
-      events, i = func(self, self.buf, i)
+    for _, method_name in ipairs(self.dispatch_list) do
+      events, i = self[method_name](self, self.buf, i)
       if events then break end
     end
     if not events then break end
@@ -303,7 +306,7 @@ function Parser:feed(string)
   return result
 end
 
-function Parser:take_mouse(buf, offset)
+function InputParser:take_mouse(buf, offset)
   -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Mouse-Tracking
   local bits, x, y, event, new_offset = buf:match('^\27%[<(%d+);(%d+);(%d+)([Mm])()', offset)
   if not event then
@@ -345,7 +348,7 @@ function Parser:take_mouse(buf, offset)
   end
 end
 
-function Parser:take_kitty_key(buf, offset)
+function InputParser:take_kitty_key(buf, offset)
   -- Reference: https://sw.kovidgoyal.net/kitty/keyboard-protocol/
   -- Honestly, this protocol is so half-baked. How am I supposed to distinguish
   -- the "new" \27[A from the old \27[A and so on??? Oh, right. I have to send
@@ -408,7 +411,7 @@ function Parser:take_kitty_key(buf, offset)
   end
 end
 
-function Parser:take_functional_key(buf, offset)
+function InputParser:take_functional_key(buf, offset)
   local seq = buf:match('^\27[O%[]%d*.', offset)
   local button = ({
     ['\27OP'] = 'f1',
@@ -457,7 +460,7 @@ function Parser:take_functional_key(buf, offset)
   end
 end
 
-function Parser:take_functional_key_with_mods(buf, offset)
+function InputParser:take_functional_key_with_mods(buf, offset)
   local keycode1, mods, keycode2, new_offset = buf:match('^\27(%[%d+;)(%d+)(.)()', offset)
   if not new_offset then
     keycode1, mods, keycode2, new_offset = buf:match('^\27(O)(%d+)(.)()', offset)
@@ -519,7 +522,7 @@ function Parser:take_functional_key_with_mods(buf, offset)
   end
 end
 
-function Parser:take_shift_tab(buf, offset)
+function InputParser:take_shift_tab(buf, offset)
   if buf:match('^\27%[Z', offset) then
     return {
       { type = 'press',   button = 'tab', alt = false, ctrl = false, shift = true },
@@ -530,7 +533,7 @@ function Parser:take_shift_tab(buf, offset)
   end
 end
 
-function Parser:take_paste(buf, offset)
+function InputParser:take_paste(buf, offset)
   -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Bracketed-Paste-Mode
   if not buf:match('^\27%[200~', offset) then
     return nil, offset
@@ -542,7 +545,7 @@ function Parser:take_paste(buf, offset)
   return {{ type = 'paste', text = buf:sub(offset + 6, end_offset - 1) }}, end_offset + 6
 end
 
-function Parser:drop_kitty_functional_key(buf, offset)
+function InputParser:drop_kitty_functional_key(buf, offset)
   local new_offset = buf:match('^\27%[%d+;%d+:%d[ABCDEFHPQS~]()', offset)
   if new_offset then
     return {}, new_offset
@@ -551,7 +554,7 @@ function Parser:drop_kitty_functional_key(buf, offset)
   end
 end
 
-function Parser:take_key(buf, offset)
+function InputParser:take_key(buf, offset)
   local alt = buf:byte(offset) == 27 and #buf > 1
   local has_codepoint, new_offset = pcall(utf8.offset, buf, 2, offset + (alt and 1 or 0))
   if not has_codepoint then
@@ -568,7 +571,7 @@ function Parser:take_key(buf, offset)
   end
 end
 
-function Parser:take_codepoint(buf, offset)
+function InputParser:take_codepoint(buf, offset)
   local has_codepoint, new_offset = pcall(utf8.offset, buf, 2, offset)
   if has_codepoint then
     return {{ type = 'paste', text = buf:sub(offset, new_offset - 1) }}, new_offset
@@ -577,4 +580,4 @@ function Parser:take_codepoint(buf, offset)
   end
 end
 
-return Parser
+return InputParser

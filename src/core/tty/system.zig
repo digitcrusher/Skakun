@@ -162,9 +162,8 @@ fn enable_raw_mode(vm: *lua.Lua) i32  {
 fn disable_raw_mode(vm: *lua.Lua) i32  {
   if(!is_open) vm.raiseErrorStr("tty is closed", .{});
   if(original_termios) |x| {
-    if(posix.tcsetattr(file.handle, .FLUSH, x)) |_| {
-      original_termios = null;
-    } else |_| {}
+    posix.tcsetattr(file.handle, .FLUSH, x) catch |err| vm.raiseErrorStr("%s", .{@errorName(err).ptr});
+    original_termios = null;
   }
   return 0;
 }

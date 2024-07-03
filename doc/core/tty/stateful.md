@@ -1,5 +1,7 @@
 # core.tty.stateful
 
+    tty = require('core.tty.stateful')
+
 A mid-level layer that thinks of the terminal as more than just a serial port
 but stops short of stateless operations. With that ideal in mind, this module is
 responsible for setting up the terminal for a TUI, detecting the terminal's
@@ -11,25 +13,28 @@ This module sets its __index to `core.tty.system` and extends `getnum` and
 `getstr` with the XTGETTCAP feature that some terminals have.
 
 All of the RGB colors below must have their values in the range of 0-255. All
-of the "named" colors are the ANSI colors, see `ansi_colors` in the source code
-for a list of them. If the color name passed is `nil`, then the terminal default
-for that specific context is used. In general, if any other type of argument is
-`nil`, then the terminal default is used.
+of the "named" colors are the ANSI colors - see `tty.ansi_colors` for a list of
+them. If the color name passed is `nil`, then the terminal's default for that
+specific context is used. In general, if any other type of attribute is `nil`,
+then the terminal default is used.
 
 ## Initialization
 
-    setup()
+    tty.setup()
 
 *Switch to raw mode, detect terminal capabitilies, load functions, enable some
 features and you're good to go!* In other words, this function prepares the
-terminal for what's to come - typing tacky text.
+terminal for what's to come - typing tacky text. But it does not reset the text
+or screen attributes. In addition, if you're in the Linux or FreeBSD console,
+then a raw keyboard mode is set and the `Kbd` for the given system becomes the
+`tty.input_parser`.
 
-    restore()
+    tty.restore()
 
 Restores the terminal to its original state from before `setup()`, so that the
 application doesn't brick your terminal.
 
-    detect_caps()
+    tty.detect_caps()
 
 Uses various means (terminfo, XTGETTCAP, other escape sequences, GNOME
 Terminal/Konsole/Xfce Terminal/xterm's version environment variable, crystal
@@ -37,12 +42,12 @@ ball reading) to automatically detect what the terminal can and cannot do (e.g.
 true-color RGB), and populates the `cap` table accordingly. This function
 respects the [`NO_COLOR` convention](https://no-color.org/).
 
-    load_functions()
+    tty.load_functions()
 
 Loads all of the functions whose values depend on the terminal's capabilities,
 which includes all of the text and screen attributes functions.
 
-    cap
+    value = tty.cap[attr]
 
 The table of the current terminal's capabilities, i.e. it contains an entry for
 every text and screen attribute. Color caps are `'true_color'`, `'ansi'` or
@@ -55,83 +60,135 @@ are a plugin developer or just a tinkerer.
 
 ## Screen contents and cursor movement
 
-    clear()
+    tty.sync_begin()
+
+Begins a synchronized update (something like VSync in the terminal world).
+
+    tty.sync_end()
+
+Ends the synchronized update.
+
+    tty.clear()
 
 Clears the screen.
 
-    goto(x, y)
+    tty.reset()
+
+Resets all text and screen attributes to default.
+
+    tty.move_to(x, y)
 
 Moves the cursor to the given position on the screen with (1, 1) as the
 upper-left corner.
 
+    tty.move_to(x, nil)
+
+Moves the cursor to the given column.
+
+    tty.move_to(nil, y)
+
+Moves the cursor to the given row.
+
 ## Text attributes
 
-    reset()
+    tty.set_foreground(red, green, blue)
+    tty.set_foreground([name])
 
-Resets all text attributes to default.
+Sets the text foreground color. The terminal default is usually white.
 
-    set_foreground(red, green, blue)
-    set_foreground(name)
+    tty.set_background(red, green, blue)
+    tty.set_background([name])
 
-Sets the text foreground color. The default is usually white.
+Sets the text background color. The terminal default is usually black.
 
-    set_background(red, green, blue)
-    set_background(name)
+    tty.set_bold([is_enabled])
 
-Sets the text background color. The default is usually black.
+Toggles bold text. The terminal default is off.
 
-    set_bold(is_enabled)
+    tty.set_italic([is_enabled])
 
-Toggles bold text. The default is usually off.
+Toggles italic text. The terminal default is off.
 
-    set_italic(is_enabled)
+    tty.set_underline([is_enabled])
 
-Toggles italic text. The default is usually off.
+Toggles underlined text. The terminal default is off.
 
-    set_underline(is_enabled)
+    tty.set_underline_color(red, green, blue)
+    tty.set_underline_color([name])
 
-Toggles underlined text. The default is usually off.
+Sets the underline color. The terminal default is usually white.
 
-    set_underline_color(red, green, blue)
-    set_underline_color(name)
+    tty.set_underline_shape([name])
 
-Sets the underline color. The default is usually white.
+Sets the underline shape - see `tty.underline_shapes` for a list. The terminal
+default is straight underlines.
 
-    set_underline_shape(name)
+    tty.set_strikethrough([is_enabled])
 
-Sets the underline shape. See `underline_shapes` in the source code for a list.
-The default is usually straight underlines.
+Toggles strikethrough text. The terminal default is off.
 
-    set_strikethrough(is_enabled)
+    tty.set_hyperlink([url])
 
-Toggles strikethrough text. The default is usually off.
-
-    set_hyperlink(url)
-
-Sets the URL that the text links to. The default is usually the terminal
-auto-detecting URLs in text or none at all.
+Sets the URL that the text links to. The terminal default is usually the
+terminal auto-detecting URLs in text or none at all.
 
 ## Screen attributes
 
-    set_cursor(is_visible)
+    tty.set_cursor([is_visible])
 
-Sets the cursor's visibility. The default is usually visible.
+Sets the cursor's visibility. The terminal default is visible.
 
-    set_cursor_shape(name)
+    tty.set_cursor_shape([name])
 
-Sets the cursor shape. See `cursor_shapes` in the source code for a list. The
-default is usually a full block.
+Sets the cursor shape - see `tty.cursor_shapes` for a list. The terminal default
+is usually a full block.
 
-    set_mouse_shape(name)
+    tty.set_mouse_shape([name])
 
-Sets the mouse pointer shape shown when hovered over the terminal window. See
-`mouse_shapes` in the source code for a list. The default is usually an I-beam.
+Sets the mouse pointer shape shown when hovered over the terminal window - see
+`tty.mouse_shapes` for a list. The terminal default is usually an I-beam.
 
-    set_window_title(text)
+    tty.set_window_title([text])
 
-Sets the terminal window's title. The default varies from terminal to terminal.
+Sets the terminal window's title. The terminal default varies from terminal to
+terminal.
 
-    set_window_background(red, green, blue)
-    set_window_background(name)
+    tty.set_window_background(red, green, blue)
+    tty.set_window_background([name])
 
-Sets the terminal window's background color. The default is usually black.
+Sets the terminal window's background color. The terminal default is usually
+black.
+
+    tty.set_clipboard([text])
+
+Sets the terminal (system) clipboard contents. I don't think the notion of
+"terminal default" applies to this one. Nevertheless, passing `nil` will clear
+the clipboard.
+
+## Event handling
+
+    events = tty.read_events()
+    for _, event in ipairs(events) do
+      event.type
+      event.button, event.alt, event.ctrl, event.shift
+      event.text
+      event.x, event.y
+    end
+
+Reads in all pending data from the terminal, passes it to `tty.input_parser` and
+returns an array of extracted events. `event.type` is one of (button) `'press'`,
+`'repeat'`, `'release'`, (text) `'paste'` or (mouse) `'move'`. For button events
+`event.button` is the name of the key or mouse button - see `tty.buttons` for a
+full list. The `event.alt`, `event.ctrl` and `event.shift` booleans signify
+whether the given modifier was pressed during the event and are present in all
+types of events for now. `event.x` and `event.y` mark the on-grid
+destination/location of the mouse pointer and are present in mouse movement and
+mouse button events.
+
+    tty.input_parser
+
+An *input parser* is an object that has a method named `feed`, which consumes
+one string of data read from the terminal, and parses and returns as many
+events as possible from its internal feed buffer. The default input parser is
+`core.tty.input_parser` but switches to `core.tty.linux.kbd` or
+`core.tty.freebsd.kbd` at initialization if possible.

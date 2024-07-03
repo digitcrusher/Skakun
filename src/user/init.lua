@@ -3,9 +3,7 @@ local tty = require('core.tty')
 local utils = require('core.utils')
 
 utils.lock_globals()
-function core.cleanup()
-  tty.restore()
-end
+core.add_cleanup(tty.restore)
 tty.setup()
 --tty.clear()
 --tty.set_cursor(false)

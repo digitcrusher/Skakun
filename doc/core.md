@@ -1,15 +1,27 @@
 # core
 
+    core = require('core')
+
 This namespace is wholly populated by the bootstrap program.
 
-    version
+    core.add_cleanup(func)
 
-Skakun's version string, e.g. `'1.2.3-dirty+22552eb`.
+Registers a function to be called at program failure or normal exit. The call
+order is opposite to the order of registration.
 
-    exe_dir
+    core.platform
 
-The absolute path to the directory containing the Skakun executable.
+The operating system we're on - `'linux'`, `'windows'`, `'macos'` or
+`'freebsd'`.
 
-    config_dir
+    core.config_dir
 
 The absolute path to Skakun's config directory.
+
+    core.version
+
+Skakun's version string, e.g. `'1.2.3-dirty+22552eb'`.
+
+    core.exe_dir
+
+The absolute path to the directory containing the Skakun executable.

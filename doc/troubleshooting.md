@@ -4,11 +4,11 @@
 
 ### If `tty.cap.clipboard` is `'remote'`…
 
-Then it means that your terminal formally supports the OSC 52 escape sequence, but that they have been disabled in your terminal's settings, usually for security reasons. You can either enable them back on or make Skakun use the local system clipboard tools by settings `tty.cap.clipboard` to `'local'`. Don't forget to `tty.load_functions()` afterwards.
+Then it means that your terminal formally supports the OSC 52 escape sequence, but that they have been disabled in your terminal's settings, usually for security reasons. You can either [enable them back on](https://github.com/tmux/tmux/wiki/Clipboard) or make Skakun use the local system clipboard tools by setting `tty.cap.clipboard` to `'local'`. Don't forget to `tty.load_functions()` afterwards.
 
 ### Otherwise…
 
-It means you probably don't have any of `xclip`, `xsel` or `wl-copy` installed. Install them.
+It means you probably don't have any of `xclip`, `xsel` or `wl-copy` installed. Install one of your choice.
 
 ## Skakun crashed and now my terminal is unusable.
 

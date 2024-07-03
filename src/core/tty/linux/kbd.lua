@@ -23,22 +23,27 @@ local K, KG, KT = system.K, system.KG, system.KT
 
 local Kbd = {
   keycodes = system.keycodes,
-  buf = '',
-  shift_state = 0,
-  slock_state = 0,
-  lock_state = 0,
-  active_accent = nil,
-  is_next_key_accent = false,
-  active_codepoint = nil,
 }
 
 function Kbd.new()
   return setmetatable({
     keycodes = setmetatable({}, { __index = Kbd.keycodes }),
+
     keymap = system.get_keymap(),
     accentmap = system.get_accentmap(),
+
+    buf = '',
     is_pressed = {},
+
+    shift_state = 0,
     shift_pressedc = {},
+    lock_state = 0,
+    slock_state = 0,
+
+    active_accent = nil,
+    is_next_key_accent = false,
+
+    active_codepoint = nil,
   }, { __index = Kbd })
 end
 
@@ -103,7 +108,7 @@ function Kbd:handle_keycode(keycode, is_release, is_repeat)
   end
 
   if action >> 8 == KT.LETTER then
-    local caps_lock = system.get_kbd_leds()
+    local caps_lock = system.get_kbd_locks()
     if caps_lock then
       local table = self.keymap[shift_final ~ 1 << KG.SHIFT]
       if table then
@@ -139,22 +144,28 @@ function Kbd:handle_action(action, is_release, is_repeat)
 
     elseif action == K.CAPS then
       if is_repeat then return end
-      local caps, num, scroll = system.get_kbd_leds()
-      system.set_kbd_leds(not caps, num, scroll)
+      local caps, num, scroll = system.get_kbd_locks()
+      system.set_kbd_locks(not caps, num, scroll)
 
     elseif action == K.NUM or action == K.BARENUMLOCK then
       if is_repeat then return end
-      local caps, num, scroll = system.get_kbd_leds()
-      system.set_kbd_leds(caps, not num, scroll)
+      local caps, num, scroll = system.get_kbd_locks()
+      system.set_kbd_locks(caps, not num, scroll)
 
     elseif action == K.CAPSON then
       if is_repeat then return end
-      local _, num, scroll = system.get_kbd_leds()
-      system.set_kbd_leds(true, num, scroll)
+      local _, num, scroll = system.get_kbd_locks()
+      system.set_kbd_locks(true, num, scroll)
 
     elseif action == K.COMPOSE then
       self.is_next_key_accent = true
 
+    -- When switching to the next or previous VC, Linux doesn't just choose
+    -- active_vc ± 1, but rather selects the nearest "allocated" VC.
+    -- Unfortunately, we ourselves cannot query whether a given VC fits the
+    -- label. Linux does have VT_GETSTATE but it only works for the first 16
+    -- VCs, which is kind of rubbish. Anyways, VCs are *usually* allocated
+    -- sequentially, so who cares?
     elseif action == K.DECRCONSOLE then
       system.set_active_vc(system.get_active_vc() - 1)
 
@@ -164,7 +175,7 @@ function Kbd:handle_action(action, is_release, is_repeat)
 
   elseif action >> 8 == KT.PAD then
     if is_release then return end
-    local _, num_lock = system.get_kbd_leds()
+    local _, num_lock = system.get_kbd_locks()
     if num_lock then
       local map = {
         [K.P0        ] = '0',
@@ -245,8 +256,8 @@ function Kbd:handle_action(action, is_release, is_repeat)
     if action == K.CAPSSHIFT then
       action = K.SHIFT
       if not is_release then
-        local _, num, scroll = system.get_kbd_leds()
-        system.set_kbd_leds(false, num, scroll)
+        local _, num, scroll = system.get_kbd_locks()
+        system.set_kbd_locks(false, num, scroll)
       end
     end
 
