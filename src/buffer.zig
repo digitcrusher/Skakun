@@ -23,17 +23,11 @@ const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const posix = std.posix;
 
-// TODO: do we need an insert stack?
-// TODO: converting between byte offests and line/cols
-// TODO: buffer diffs
-
 // Some methods have an optional "err_msg" parameter, which on failure, may be
 // set to an error message from GIO. The caller is reponsible for freeing
 // err_msg with the Editor's allocator afterwards.
 
-// Even if the backup file has been renamed, moved, modified or deleted, the
-// editor will still try to delete a file under the same name in the original
-// directory.
+pub const Error = Allocator.Error || error {BufferFrozen, OutOfBounds, MultipleHardLinks} || GioError || posix.OpenError || posix.ReadError || posix.MMapError || posix.RealPathError || posix.RenameError;
 
 const Fragment = struct {
   const Owner = enum {
@@ -45,22 +39,82 @@ const Fragment = struct {
 
   // Data specific to mmaps
   is_corrupt: bool = false,
-  // A file descriptor's inode number is constant. Even then, an mmap is bound
-  // to the inode, and not the file descriptor.
+  // A file descriptor's inode number is constant. Even then, an mmap is
+  // technically bound to the inode, and not the file descriptor.
   st_dev: posix.dev_t = undefined,
   st_ino: posix.ino_t = undefined,
   file_monitor: ?*gio.GFileMonitor = null,
 
   fn create(editor: *Editor, owner: Owner, data: []u8) Allocator.Error!*Fragment {
+    assert(owner != .Mmap);
     const self = try editor.allocator.create(Fragment);
     self.* = .{
       .owner = owner,
       .data = data,
     };
-    if(owner == .Mmap) {
-      try editor.mmaps.append(self);
-    }
     return self;
+  }
+
+  fn create_mmap(editor: *Editor, data: []u8, st_dev: posix.dev_t, st_ino: posix.ino_t, path: [*:0]const u8, err_msg: ?*?[:0]u8) GioError!*Fragment {
+    const self = try editor.allocator.create(Fragment);
+    errdefer editor.allocator.destroy(self);
+    self.* = .{
+      .owner = .Mmap,
+      .data = data,
+      .st_dev = st_dev,
+      .st_ino = st_ino,
+    };
+
+    const file = gio.g_file_new_for_path(path);
+    defer gio.g_object_unref(file);
+
+    gio.g_main_context_push_thread_default(editor.gio_async_ctx);
+    defer gio.g_main_context_pop_thread_default(editor.gio_async_ctx);
+
+    var err: ?*gio.GError = null;
+    self.file_monitor = gio.g_file_monitor_file(file, gio.G_FILE_MONITOR_WATCH_HARD_LINKS, null, &err) orelse return handle_gio_error(err.?, editor.allocator, err_msg);
+    errdefer gio.g_object_unref(self.file_monitor);
+
+    const user_data = try editor.allocator.create(GioCallbackUserData);
+    errdefer editor.allocator.destroy(user_data);
+    user_data.* = .{ .self = self, .editor = editor };
+    _ = gio.g_signal_connect_data(self.file_monitor, "changed", @ptrCast(&gio_file_monitor_callback), user_data, @ptrCast(&gio_destroy_user_data), gio.G_CONNECT_DEFAULT);
+
+    try editor.mmaps.append(self);
+    return self;
+  }
+
+  const GioCallbackUserData = struct { self: *Fragment, editor: *Editor };
+  fn gio_file_monitor_callback(_: *gio.GFileMonitor, _: *gio.GFile, _: *gio.GFile, event: gio.GFileMonitorEvent, user_data: *GioCallbackUserData) callconv(.C) void {
+    // We don't have to check for deletion since the mmap keeps the file
+    // contents alive.
+    if(event != gio.G_FILE_MONITOR_EVENT_CHANGED) return;
+    const self = user_data.self;
+    const editor = user_data.editor;
+
+    if(self.file_monitor != null) return;
+    const file_monitor = self.file_monitor.?;
+    self.file_monitor = null;
+    gio.g_object_unref(file_monitor);
+
+    // Unfortunately, when the backing file is modified, the whole mmapped
+    // range is trashed, so we can't zero out only the unloaded pages.
+    // (I've tried.)
+    self.is_corrupt = true;
+    self.data = posix.mmap(@alignCast(self.data.ptr), self.data.len, posix.PROT.READ, .{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0) catch unreachable;
+    for(editor.buffers.items) |buffer| {
+      if(buffer.root) |root| {
+        root.update_stats(true);
+      }
+    }
+    var iter = editor.copy_cache.valueIterator();
+    while(iter.next()) |node| {
+      node.*.update_stats(true);
+    }
+    editor.were_mmaps_corrupted = true;
+  }
+  fn gio_destroy_user_data(user_data: *GioCallbackUserData, _: *gio.GClosure) callconv(.C) void {
+    user_data.editor.allocator.destroy(user_data);
   }
 
   fn ref(self: *Fragment) *Fragment {
@@ -80,9 +134,7 @@ const Fragment = struct {
       },
       .Mmap => {
         posix.munmap(@alignCast(self.data));
-        if(self.file_monitor) |x| {
-          gio.g_object_unref(x);
-        }
+        if(self.file_monitor) |x| gio.g_object_unref(x);
         _ = editor.mmaps.swapRemove(std.mem.indexOfScalar(*Fragment, editor.mmaps.items, self).?);
       },
     }
@@ -98,15 +150,17 @@ const Fragment = struct {
     self.owner = .Allocator;
 
     posix.munmap(@alignCast(data));
-    if(self.file_monitor) |x| {
-      gio.g_object_unref(x);
-    }
+    if(self.file_monitor) |x| gio.g_object_unref(x);
     _ = editor.mmaps.swapRemove(std.mem.indexOfScalar(*Fragment, editor.mmaps.items, self).?);
 
     for(editor.buffers.items) |buffer| {
       if(buffer.root) |root| {
         root.update_stats(true);
       }
+    }
+    var iter = editor.copy_cache.valueIterator();
+    while(iter.next()) |node| {
+      node.*.update_stats(true);
     }
   }
 };
@@ -165,7 +219,7 @@ const Node = struct {
     editor.allocator.destroy(self);
   }
 
-  fn melt(self: *Node, editor: *Editor) Allocator.Error!*Node {
+  fn thaw(self: *Node, editor: *Editor) Allocator.Error!*Node {
     if(!self.is_frozen) {
       return self;
     }
@@ -220,6 +274,8 @@ const Node = struct {
 
   fn update_stats(self: *Node, should_recurse: bool) void {
     self.stats.bytes = self.frag.end - self.frag.start;
+    self.stats.has_healthy_mmap = false;
+    self.stats.has_corrupt_mmap = false;
     if(self.frag.ptr.owner == .Mmap) {
       if(self.frag.ptr.is_corrupt) {
         self.stats.has_corrupt_mmap = true;
@@ -255,7 +311,7 @@ const Node = struct {
     }
   }
 
-  fn read(self: *Node, offset_: usize, dest: []u8) !usize {
+  fn read(self: *Node, offset_: usize, dest: []u8) error {OutOfBounds}!usize {
     var offset = offset_;
     if(offset > self.stats.bytes) return error.OutOfBounds;
     if(dest.len <= 0) {
@@ -290,7 +346,7 @@ const Node = struct {
     return readc;
   }
 
-  fn save(self: *Node, editor: *Editor, output: *gio.GOutputStream, err_msg: ?*?[]u8) !void {
+  fn save(self: *Node, editor: *Editor, output: *gio.GOutputStream, err_msg: ?*?[:0]u8) GioError!void {
     if(self.left) |x| {
       try x.save(editor, output, err_msg);
     }
@@ -308,20 +364,21 @@ const Node = struct {
     var a = maybe_a orelse return maybe_b;
     var b = maybe_b orelse return maybe_a;
     if(a.priority >= b.priority) {
-      const result = try a.melt(editor);
+      const result = try a.thaw(editor);
       result.set_right(editor, try Node.merge(editor, a.right, b));
       result.update_stats(false);
       return result;
     } else {
-      const result = try b.melt(editor);
+      const result = try b.thaw(editor);
       result.set_left(editor, try Node.merge(editor, a, b.left));
       result.update_stats(false);
       return result;
     }
   }
 
-  // We do this reference juggling so that a cleanly split off child doesn't get garbage collected when unlinked from the parent.
-  fn split_ref(self: *Node, editor: *Editor, offset_: usize) !struct {?*Node, ?*Node} {
+  // We do this reference juggling so that a cleanly split off child doesn't get
+  // garbage collected when unlinked from the parent.
+  fn split_ref(self: *Node, editor: *Editor, offset_: usize) error {OutOfBounds, OutOfMemory}!struct {?*Node, ?*Node} {
     var offset = offset_;
     if(offset == 0) {
       return .{null, self.ref()};
@@ -329,7 +386,7 @@ const Node = struct {
 
     if(self.left) |left| {
       if(offset <= left.stats.bytes) {
-        const b = try self.melt(editor);
+        const b = try self.thaw(editor);
         const sub = try left.split_ref(editor, offset);
         b.set_left(editor, sub[1]);
         if(sub[1]) |x| x.unref(editor);
@@ -343,7 +400,7 @@ const Node = struct {
       const b = try Node.create(editor, self.frag.ptr, self.frag.start + offset, self.frag.end);
       b.set_right(editor, self.right);
       b.update_stats(false);
-      const a = try self.melt(editor);
+      const a = try self.thaw(editor);
       a.frag.end = a.frag.start + offset;
       a.set_right(editor, null);
       a.update_stats(false);
@@ -353,7 +410,7 @@ const Node = struct {
 
     if(self.right) |right| {
       if(offset < right.stats.bytes) {
-        const a = try self.melt(editor);
+        const a = try self.thaw(editor);
         const sub = try right.split_ref(editor, offset);
         a.set_right(editor, sub[0]);
         if(sub[0]) |x| x.unref(editor);
@@ -365,30 +422,16 @@ const Node = struct {
 
     return if(offset == 0) .{self.ref(), null} else error.OutOfBounds;
   }
-
-  fn debug(self: *Node) void {
-    std.debug.print("node {} {} {}\n", .{self.priority, self.frag.end - self.frag.start, self.stats.bytes});
-    if(self.left) |x| {
-      x.debug();
-    } else {
-      std.debug.print("null\n", .{});
-    }
-    if(self.right) |x| {
-      x.debug();
-    } else {
-      std.debug.print("null\n", .{});
-    }
-  }
 };
 
 pub const Buffer = struct {
   editor: *Editor,
   root: ?*Node,
   is_frozen: bool = false,
-  freeze_time_ms: i64 = undefined,
 
-  fn create(editor: *Editor, root: ?*Node) Allocator.Error!*Buffer {
+  pub fn create(editor: *Editor, root: ?*Node) Allocator.Error!*Buffer {
     const self = try editor.allocator.create(Buffer);
+    errdefer editor.allocator.destroy(self);
     self.* = .{
       .editor = editor,
       .root = if(root) |x| x.ref() else null,
@@ -408,22 +451,33 @@ pub const Buffer = struct {
   pub fn freeze(self: *Buffer) void {
     self.is_frozen = true;
     if(self.root) |x| {
-      x.unref(self.editor);
+      x.is_frozen = true;
     }
-    self.freeze_time_ms = std.time.milliTimestamp();
   }
 
-  pub fn melt(self: *Buffer) Allocator.Error!*Buffer {
+  pub fn thaw(self: *Buffer) Allocator.Error!*Buffer {
     return if(self.is_frozen) Buffer.create(self.editor, self.root) else self;
   }
 
   pub fn load(self: *Buffer) Allocator.Error!void {
     if(self.root) |x| {
-      try x.load(self.editor);
+      return x.load(self.editor);
     }
   }
 
-  pub fn read(self: *Buffer, offset: usize, dest: []u8) !usize {
+  pub fn len(self: *Buffer) usize {
+    return if(self.root) |x| x.stats.bytes else 0;
+  }
+
+  pub fn has_healthy_mmap(self: *Buffer) bool {
+    return if(self.root) |x| x.stats.has_healthy_mmap else false;
+  }
+
+  pub fn has_corrupt_mmap(self: *Buffer) bool {
+    return if(self.root) |x| x.stats.has_corrupt_mmap else false;
+  }
+
+  pub fn read(self: *Buffer, offset: usize, dest: []u8) error {OutOfBounds}!usize {
     if(self.root) |x| {
       return x.read(offset, dest);
     } else if(offset > 0) {
@@ -433,13 +487,13 @@ pub const Buffer = struct {
     }
   }
 
-  pub fn save(self: *Buffer, path: []const u8, err_msg: ?*?[]u8) !void {
+  pub fn save(self: *Buffer, path: []const u8, err_msg: ?*?[:0]u8) (GioError || posix.OpenError || posix.RealPathError || posix.RenameError || error {MultipleHardLinks})!void {
     const path_z = try self.editor.allocator.dupeZ(u8, path);
     defer self.editor.allocator.free(path_z);
-    return self.saveZ(path_z, err_msg);
+    return self.save_z(path_z, err_msg);
   }
 
-  pub fn saveZ(self: *Buffer, path: [*:0]const u8, err_msg: ?*?[]u8) !void {
+  pub fn save_z(self: *Buffer, path: [*:0]const u8, err_msg: ?*?[:0]u8) (GioError || posix.OpenError || posix.RealPathError || posix.RenameError || error {MultipleHardLinks})!void {
     var err: ?*gio.GError = null;
 
     var output: *gio.GOutputStream = undefined;
@@ -463,7 +517,7 @@ pub const Buffer = struct {
       // This is morally wrong: https://insanecoding.blogspot.com/2007/11/pathmax-simply-isnt.html
       var buf: [std.fs.max_path_bytes]u8 = undefined;
       // This does return error.FileNotFound even if a symlink exists but is broken.
-      const maybe_real_path = posix.realpathZ(path, &buf) catch |err2| if(err2 == error.FileNotFound) null else return err2;
+      const maybe_real_path = posix.realpathZ(path, &buf) catch |x| if(x == error.FileNotFound) null else return x;
 
       if(maybe_real_path) |real_path| {
         const dir_path = std.fs.path.dirname(real_path) orelse {
@@ -504,7 +558,6 @@ pub const Buffer = struct {
           try self.editor.moved_mmapped_files.append(.{ .dir_fd = dir_fd, .name = new_name });
           should_close_dir_fd = false;
 
-          // We don't want to close a file descriptor twice.
           posix.close(fd);
           should_close_fd = false;
           fd = try posix.openat(dir_fd, name, .{ .ACCMODE = .WRONLY, .CREAT = true, .EXCL = true }, stat.mode);
@@ -524,16 +577,19 @@ pub const Buffer = struct {
     if(self.root) |x| {
       try x.save(self.editor, output, err_msg);
     }
-    if(gio.g_output_stream_close(output, null, &err) == 0) {
-      return handle_gio_error(err.?, self.editor.allocator, err_msg);
-    }
+    if(gio.g_output_stream_close(output, null, &err) == 0) return handle_gio_error(err.?, self.editor.allocator, err_msg);
   }
 
-  pub fn insert(self: *Buffer, offset: usize, data: []const u8) !void {
+  pub fn insert(self: *Buffer, offset: usize, data: []const u8) (Allocator.Error || error {BufferFrozen, OutOfBounds})!void {
     if(self.is_frozen) return error.BufferFrozen;
     if(data.len <= 0) return;
 
-    const node = try Node.create(self.editor, try Fragment.create(self.editor, .Allocator, try self.editor.allocator.dupe(u8, data)), 0, data.len);
+    const copied_data = try self.editor.allocator.dupe(u8, data);
+    errdefer self.editor.allocator.free(copied_data);
+    const frag = try Fragment.create(self.editor, .Allocator, copied_data);
+    errdefer frag.ref().unref(self.editor);
+    const node = try Node.create(self.editor, frag, 0, data.len);
+    errdefer node.ref().unref(self.editor);
 
     if(self.root) |root| {
       self.root = null;
@@ -552,7 +608,7 @@ pub const Buffer = struct {
     }
   }
 
-  pub fn delete(self: *Buffer, start: usize, end: usize) !void {
+  pub fn delete(self: *Buffer, start: usize, end: usize) (Allocator.Error || error {BufferFrozen, OutOfBounds})!void {
     if(self.is_frozen) return error.BufferFrozen;
     if(start >= end) return;
     if(self.root == null) return error.OutOfBounds;
@@ -576,7 +632,7 @@ pub const Buffer = struct {
     }
   }
 
-  pub fn copy(self: *Buffer, offset: usize, src: *Buffer, start: usize, end: usize) !void {
+  pub fn copy(self: *Buffer, offset: usize, src: *Buffer, start: usize, end: usize) (Allocator.Error || error {BufferFrozen, OutOfBounds})!void {
     assert(self.editor == src.editor);
     if(self.is_frozen) return error.BufferFrozen;
     if(start >= end) return;
@@ -621,17 +677,19 @@ pub const Buffer = struct {
 
 pub const Editor = struct {
   allocator: Allocator,
-  rng: std.rand.DefaultPrng,
+  rng: std.Random.DefaultPrng,
 
-  max_load_size: usize = 100_000_000,
+  // This is actually a real configuration variable.
+  max_open_size: usize = 100_000_000,
 
   mmaps: std.ArrayList(*Fragment),
   buffers: std.ArrayList(*Buffer),
-  moved_mmapped_files: std.ArrayList(struct { // Multiple fragments can refer to the same file, just how there can be many file descriptors referring to one file.
+  moved_mmapped_files: std.ArrayList(struct {
     dir_fd: posix.fd_t,
     name: [:0]u8,
   }),
   gio_async_ctx: *gio.GMainContext,
+  were_mmaps_corrupted: bool = false,
 
   copy_cache: std.AutoHashMap(struct {
     src: *Node,
@@ -640,19 +698,16 @@ pub const Editor = struct {
   }, *Node),
 
   pub fn init(allocator: Allocator) Editor {
-    var self = Editor{
+    var self: Editor = undefined;
+    self = .{
       .allocator = allocator,
-      .rng = std.rand.DefaultPrng.init(@bitCast(@as(i64, @truncate(std.time.nanoTimestamp())))),
-      .mmaps = undefined,
-      .buffers = undefined,
-      .moved_mmapped_files = undefined,
+      .rng = @TypeOf(self.rng).init(@bitCast(@as(i64, @truncate(std.time.nanoTimestamp())))),
+      .mmaps = @TypeOf(self.mmaps).init(allocator),
+      .buffers = @TypeOf(self.buffers).init(allocator),
+      .moved_mmapped_files = @TypeOf(self.moved_mmapped_files).init(allocator),
       .gio_async_ctx = gio.g_main_context_new().?,
-      .copy_cache = undefined,
+      .copy_cache = @TypeOf(self.copy_cache).init(allocator),
     };
-    self.mmaps = @TypeOf(self.mmaps).init(allocator);
-    self.buffers = @TypeOf(self.buffers).init(allocator);
-    self.moved_mmapped_files = @TypeOf(self.moved_mmapped_files).init(allocator);
-    self.copy_cache = @TypeOf(self.copy_cache).init(allocator);
     return self;
   }
 
@@ -660,16 +715,19 @@ pub const Editor = struct {
     self.mmaps.deinit();
     self.buffers.deinit();
     for(self.moved_mmapped_files.items) |file| {
+      // Multiple fragments can refer to the same file, just how there can be
+      // many file descriptors referring to one file.
       posix.unlinkatZ(file.dir_fd, file.name, 0) catch {};
+      posix.close(file.dir_fd);
       self.allocator.free(file.name);
     }
     self.moved_mmapped_files.deinit();
     gio.g_main_context_unref(self.gio_async_ctx);
-    self.clear_cache();
+    self.clear_copy_cache();
     self.copy_cache.deinit();
   }
 
-  pub fn clear_cache(self: *Editor) void {
+  pub fn clear_copy_cache(self: *Editor) void {
     var iter = self.copy_cache.valueIterator();
     while(iter.next()) |node| {
       node.*.unref(self);
@@ -677,13 +735,13 @@ pub const Editor = struct {
     self.copy_cache.clearAndFree();
   }
 
-  pub fn open(self: *Editor, path: []const u8, err_msg: ?*?[]u8) !*Buffer {
+  pub fn open(self: *Editor, path: []const u8, err_msg: ?*?[:0]u8) (GioError || posix.OpenError || posix.ReadError || posix.MMapError)!*Buffer {
     const path_z = try self.allocator.dupeZ(u8, path);
     defer self.allocator.free(path_z);
-    return self.openZ(path_z, err_msg);
+    return self.open_z(path_z, err_msg);
   }
 
-  pub fn openZ(self: *Editor, path: [*:0]const u8, err_msg: ?*?[]u8) !*Buffer {
+  pub fn open_z(self: *Editor, path: [*:0]const u8, err_msg: ?*?[:0]u8) (GioError || posix.OpenError || posix.ReadError || posix.MMapError)!*Buffer {
     var err: ?*gio.GError = null;
 
     var frag: *Fragment = undefined;
@@ -693,6 +751,7 @@ pub const Editor = struct {
 
       var data: []u8 = undefined;
       if(gio.g_file_load_contents(file, null, @ptrCast(&data.ptr), &data.len, null, &err) == 0) return handle_gio_error(err.?, self.allocator, err_msg);
+      errdefer gio.g_free(data.ptr);
       frag = try Fragment.create(self, .Glib, data);
 
     } else {
@@ -701,74 +760,60 @@ pub const Editor = struct {
       const stat = try posix.fstat(fd);
 
       const size: usize = @intCast(stat.size);
-      if(size <= self.max_load_size) {
+      if(size <= self.max_open_size) {
         var data = try self.allocator.alloc(u8, size);
+        errdefer self.allocator.free(data);
         data.len = try posix.read(fd, data);
         frag = try Fragment.create(self, .Allocator, data);
 
       } else {
-        frag = try Fragment.create(self, .Mmap, try posix.mmap(null, size, posix.PROT.READ, .{ .TYPE = .PRIVATE }, fd, 0));
-        frag.st_dev = stat.dev;
-        frag.st_ino = stat.ino;
-
-        const file = gio.g_file_new_for_path(path);
-        defer gio.g_object_unref(file);
-
-        gio.g_main_context_push_thread_default(self.gio_async_ctx);
-        defer gio.g_main_context_pop_thread_default(self.gio_async_ctx);
-        frag.file_monitor = gio.g_file_monitor_file(file, gio.G_FILE_MONITOR_WATCH_HARD_LINKS, null, &err) orelse {
-          return handle_gio_error(err.?, self.allocator, err_msg);
-        };
-        const user_data = try self.allocator.create(GioCallbackUserData);
-        user_data.* = .{
-          .self = self,
-          .mmap = frag,
-        };
-        _ = gio.g_signal_connect_data(frag.file_monitor, "changed", @ptrCast(&gio_file_monitor_callback), user_data, @ptrCast(&gio_destroy_user_data), gio.G_CONNECT_DEFAULT);
+        const data = try posix.mmap(null, size, posix.PROT.READ, .{ .TYPE = .PRIVATE }, fd, 0);
+        errdefer posix.munmap(@alignCast(data));
+        frag = try Fragment.create_mmap(self, data, stat.dev, stat.ino, path, err_msg);
       }
     }
 
     if(frag.data.len > 0) {
-      return Buffer.create(self, try Node.create(self, frag, 0, frag.data.len));
+      errdefer frag.ref().unref(self);
+      const root = try Node.create(self, frag, 0, frag.data.len);
+      errdefer root.ref().unref(self);
+      return Buffer.create(self, root);
     } else {
       frag.ref().unref(self);
       return Buffer.create(self, null);
     }
   }
 
-  pub fn check_fs_events(self: *Editor) void {
+  pub fn check_fs_events(self: *Editor) bool {
+    self.were_mmaps_corrupted = false;
     _ = gio.g_main_context_iteration(self.gio_async_ctx, 0);
+    return self.were_mmaps_corrupted;
   }
+};
 
-  const GioCallbackUserData = struct {
-    self: *Editor,
-    mmap: *Fragment,
-  };
-  fn gio_file_monitor_callback(_: *gio.GFileMonitor, _: *gio.GFile, _: *gio.GFile, event: gio.GFileMonitorEvent, user_data: *GioCallbackUserData) callconv(.C) void {
-    if(event != gio.G_FILE_MONITOR_EVENT_CHANGED) return; // We don't have to check for deletion since the mmap keeps the file contents alive.
-    const self = user_data.self;
-    const mmap = user_data.mmap;
-
-    if(mmap.file_monitor) |file_monitor| {
-      mmap.file_monitor = null;
-      gio.g_object_unref(file_monitor);
-
-      // Unfortunately, when the backing file is modified, the whole mmapped
-      // range is trashed, so we can't zero out only the unloaded pages.
-      // (I've tried.)
-      mmap.is_corrupt = true;
-      mmap.data = posix.mmap(@alignCast(mmap.data.ptr), mmap.data.len, posix.PROT.READ, .{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0) catch unreachable;
-      for(self.buffers.items) |buffer| {
-        if(buffer.root) |root| {
-          root.update_stats(true);
-        }
-      }
-    }
-  }
-
-  fn gio_destroy_user_data(user_data: *GioCallbackUserData, _: *gio.GClosure) callconv(.C) void {
-    user_data.self.allocator.destroy(user_data);
-  }
+pub const GioError = error {
+  AccessDenied,
+  BadPathName,
+  ConnectionRefused,
+  ConnectionResetByPeer,
+  ConnectionTimedOut,
+  DbusFailure,
+  DeviceBusy,
+  FdQuotaExceeded,
+  FileNotFound,
+  FileNotMounted,
+  IsDir,
+  LinkQuotaExceeded,
+  NameServerFailure,
+  NameTooLong,
+  NetworkUnreachable,
+  NoDevice,
+  NoSpaceLeft,
+  OutOfMemory,
+  TemporaryNameServerFailure,
+  TlsInitializationFailed,
+  Unexpected,
+  UnknownHostName,
 };
 
 // We try to mimic std.http.Client's and std.fs.File's errors here. Note that
@@ -777,10 +822,10 @@ pub const Editor = struct {
 // POSIX errors, so to obtain this mapping I just had to search for the Glib
 // error in its source code and then search for the corresponding POSIX error
 // in std.posix's source code.
-fn handle_gio_error(err: *gio.GError, allocator: Allocator, msg: ?*?[]u8) anyerror {
+fn handle_gio_error(err: *gio.GError, allocator: Allocator, msg: ?*?[:0]u8) GioError {
   defer gio.g_error_free(err);
   if(msg) |x| {
-    x.* = allocator.dupe(u8, std.mem.span(err.message)) catch null;
+    x.* = allocator.dupeZ(u8, std.mem.span(err.message)) catch null;
   }
   // Normally, in C code, one would use G_DBUS_ERROR, G_IO_ERROR,
   // G_RESOLVER_ERROR and G_TLS_ERROR here, but Zig is different and we are
@@ -791,7 +836,7 @@ fn handle_gio_error(err: *gio.GError, allocator: Allocator, msg: ?*?[]u8) anyerr
     return switch(err.code) {
       gio.G_DBUS_ERROR_NO_MEMORY => error.OutOfMemory,
       gio.G_DBUS_ERROR_SPAWN_NO_MEMORY => error.OutOfMemory,
-      else => error.DbusError,
+      else => error.DbusFailure,
     };
   } else if(err.domain == gio.g_io_error_quark()) {
     return switch(err.code) {
@@ -799,7 +844,7 @@ fn handle_gio_error(err: *gio.GError, allocator: Allocator, msg: ?*?[]u8) anyerr
       gio.G_IO_ERROR_IS_DIRECTORY => error.IsDir,
       gio.G_IO_ERROR_FILENAME_TOO_LONG => error.NameTooLong,
       gio.G_IO_ERROR_INVALID_FILENAME => error.BadPathName,
-      gio.G_IO_ERROR_TOO_MANY_LINKS => error.SymLinkLoop,
+      gio.G_IO_ERROR_TOO_MANY_LINKS => error.LinkQuotaExceeded,
       gio.G_IO_ERROR_NO_SPACE => error.NoSpaceLeft,
       gio.G_IO_ERROR_PERMISSION_DENIED => error.AccessDenied,
       gio.G_IO_ERROR_NOT_MOUNTED => error.FileNotMounted,
@@ -807,7 +852,7 @@ fn handle_gio_error(err: *gio.GError, allocator: Allocator, msg: ?*?[]u8) anyerr
       gio.G_IO_ERROR_BUSY => error.DeviceBusy,
       gio.G_IO_ERROR_HOST_NOT_FOUND => error.UnknownHostName,
       gio.G_IO_ERROR_TOO_MANY_OPEN_FILES => error.FdQuotaExceeded,
-      gio.G_IO_ERROR_DBUS_ERROR => error.DbusError,
+      gio.G_IO_ERROR_DBUS_ERROR => error.DbusFailure,
       gio.G_IO_ERROR_HOST_UNREACHABLE => error.NetworkUnreachable,
       gio.G_IO_ERROR_NETWORK_UNREACHABLE => error.NetworkUnreachable,
       gio.G_IO_ERROR_CONNECTION_REFUSED => error.ConnectionRefused,

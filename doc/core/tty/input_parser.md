@@ -4,8 +4,8 @@
     input_parser = InputParser.new()
     events = input_parser:feed(string)
 
-This is the default terminal *input parser*. Look in `core.tty.stateful` for the
-definition of an *input parser*.
+This is the default terminal input parser. Look in `core.tty.stateful` for the
+definition of an input parser.
 
     InputParser.dispatch_list
 
@@ -21,12 +21,14 @@ offset in case of failure. It's allowed to return an empty array, see
     key.button, key.ctrl, key.shift, key.text
 
 A reverse keymap that maps codepoints back to keys, used in
-`InputParser.take_key`.
+`InputParser.take_key`. Modify this, if you have an unusual keyboard layout and
+Skakun misidentifies your keys or doesn't report them as buttons at all.
 
     button = InputParser.kitty_keymap[keycode]
 
 A mapping of Kitty key event keycodes to Skakun button names, used in
-`InputParser.take_kitty_key`.
+`InputParser.take_kitty_key`. You may add additional entries, if you want to use
+more of your non-standard (just like your mum) keyboard.
 
     input_parser.dispatch_list
     input_parser.keymap

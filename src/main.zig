@@ -17,43 +17,29 @@
 const std = @import("std");
 const target = @import("builtin").target;
 const build = @import("build");
-const Editor = @import("buffer.zig").Editor;
 const lua = @import("ziglua");
+const c = @cImport(@cInclude("stdlib.h"));
 
-const glyphs = [256]?[]const u8{
-  "␀", "␁", "␂", "␃", "␄", "␅", "␆", "␇", "␈", "␉", "␊", "␋", "␌", "␍", "␎", "␏",
-  "␐", "␑", "␒", "␓", "␔", "␕", "␖", "␗", "␘", "␙", "␚", "␛", "␜", "␝", "␞", "␟",
-  null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-  null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-  null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-  null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-  null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-  null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, "␡",
-  "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·",
-  "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·",
-  "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·",
-  "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·",
-  "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·",
-  "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·",
-  "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·",
-  "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·", "·",
-};
+var vm: *lua.Lua = undefined;
+
+fn cleanup() callconv(.C) void {
+  vm.doString(
+    \\local core = require('core')
+    \\for i = #core.cleanups, 1, -1 do
+    \\  xpcall(
+    \\    core.cleanups[i],
+    \\    function(err)
+    \\      print(debug.traceback(err, 2))
+    \\    end,
+    \\  )
+    \\end
+  ) catch unreachable;
+}
 
 pub fn main() !void {
-  // for(0..256) |char| {
-  //   if(glyphs[char]) |s| {
-  //     std.debug.print("{s}", .{s});
-  //   } else {
-  //     std.debug.print("{c}", .{@as(u8, @intCast(char))});
-  //   }
-  //   if(char % 16 == 15) {
-  //     std.debug.print("\n", .{});
-  //   }
-  // }
-
   var gpa = std.heap.GeneralPurposeAllocator(.{}){};
   defer _ = gpa.deinit();
-  var allocator = gpa.allocator();
+  const allocator = gpa.allocator();
 
   const args = try std.process.argsAlloc(allocator);
   defer std.process.argsFree(allocator, args);
@@ -70,59 +56,7 @@ pub fn main() !void {
     return;
   }
 
-  if(false) {
-    var editor = Editor.init(gpa.allocator());
-    editor.max_load_size = 0;
-    defer editor.deinit();
-
-    var err_msg: ?[]u8 = null;
-    var buffer = editor.open(args[1], &err_msg) catch |err| {
-      if(err_msg) |x| {
-        defer editor.allocator.free(x);
-        std.debug.print("{s}: {s}\n", .{@errorName(err), x});
-      } else {
-        std.debug.print("{s}\n", .{@errorName(err)});
-      }
-      std.process.exit(1);
-    };
-    defer buffer.destroy();
-
-    //try buffer.insert(28, "- Wyłącz komputer i pójdź do psychologa.\n");
-    //try buffer.delete(73, 1274);
-
-    var buf: [1000]u8 = undefined;
-    const data = buf[0 .. try buffer.read(0, &buf)];
-    for(data) |*x| {
-      x.* = if(std.ascii.isLower(x.*)) std.ascii.toUpper(x.*) else std.ascii.toLower(x.*);
-    }
-    try buffer.delete(0, data.len);
-    try buffer.insert(0, data);
-
-    try buffer.copy(200, buffer, 0, 100);
-    try buffer.delete(0, 100);
-
-    try buffer.load();
-
-    const start = std.time.timestamp();
-    while(std.time.timestamp() - start <= 10) {
-      editor.check_fs_events();
-    }
-
-    buffer.save(args[2], &err_msg) catch |err| {
-      if(err_msg) |x| {
-        defer editor.allocator.free(x);
-        std.debug.print("{s}: {s}\n", .{@errorName(err), x});
-      } else {
-        std.debug.print("{s}\n", .{@errorName(err)});
-      }
-      std.process.exit(1);
-    };
-  }
-
-  _ = gpa.detectLeaks();
-
-  if(true) {
-  const vm = try lua.Lua.init(&allocator);
+  vm = try lua.Lua.init(&allocator);
   defer vm.deinit();
   vm.openLibs();
 
@@ -142,6 +76,13 @@ pub fn main() !void {
   }
   vm.setField(-2, "platform");
 
+  vm.createTable(@intCast(args.len), 0);
+  for(args, 1 ..) |arg, i| {
+    _ = vm.pushString(arg);
+    vm.setIndex(-2, @intCast(i));
+  }
+  vm.setField(-2, "args");
+
   _ = vm.pushString(build.version);
   vm.setField(-2, "version");
 
@@ -150,20 +91,11 @@ pub fn main() !void {
   _ = vm.pushString(exe_dir);
   vm.setField(-2, "exe_dir");
 
-  vm.requireF("core.tty.system", lua.wrap(@import("core/tty/system.zig").luaopen), false);
-  if(target.os.tag == .linux) {
-    vm.requireF("core.tty.linux.system", lua.wrap(@import("core/tty/linux/system.zig").luaopen), false);
-  } else if(target.os.tag == .windows) {
-    vm.requireF("core.tty.windows", lua.wrap(@import("core/tty/windows.zig").luaopen), false);
-  } else if(target.isBSD()) {
-    vm.requireF("core.tty.freebsd.system", lua.wrap(@import("core/tty/freebsd/system.zig").luaopen), false);
-  }
-
   try vm.doString(
-    \\local core = require('core')
-    \\core.cleanups = {}
     \\xpcall(
     \\  function()
+    \\    local core = require('core')
+    \\    core.cleanups = {}
     \\    function core.add_cleanup(func)
     \\      core.cleanups[#core.cleanups + 1] = func
     \\    end
@@ -189,19 +121,34 @@ pub fn main() !void {
     \\    package.path = core.config_dir .. '/?/init.lua;' .. package.path
     \\    package.path = core.config_dir .. '/?.lua;' .. package.path
     \\    package.cpath = core.config_dir .. '/?.so;' .. package.cpath
-    \\    require('user')
-    \\    for i = #core.cleanups, 1, -1, do
-    \\      core.cleanups[i]()
-    \\    end
     \\  end,
     \\  function(err)
-    \\    for i = #core.cleanups, 1, -1, do
-    \\      pcall(core.cleanups[i])
-    \\    end
     \\    print(debug.traceback(err, 2))
     \\    os.exit(1)
-    \\  end
+    \\  end,
     \\)
   );
+  std.debug.assert(c.atexit(cleanup) == 0);
+
+  vm.requireF("core.buffer", lua.wrap(@import("core/buffer.zig").luaopen), false);
+  vm.requireF("core.tty.system", lua.wrap(@import("core/tty/system.zig").luaopen), false);
+  if(target.os.tag == .linux) {
+    vm.requireF("core.tty.linux.system", lua.wrap(@import("core/tty/linux/system.zig").luaopen), false);
+  } else if(target.os.tag == .windows) {
+    vm.requireF("core.tty.windows", lua.wrap(@import("core/tty/windows.zig").luaopen), false);
+  } else if(target.isBSD()) {
+    vm.requireF("core.tty.freebsd.system", lua.wrap(@import("core/tty/freebsd/system.zig").luaopen), false);
   }
+
+  try vm.doString(
+    \\local core = require('core')
+    \\xpcall(
+    \\  require,
+    \\  function(err)
+    \\    print(debug.traceback(err, 2))
+    \\    os.exit(1)
+    \\  end,
+    \\  'user',
+    \\)
+  );
 }

@@ -1,8 +1,41 @@
+local Buffer = require('core.buffer')
 local core = require('core')
 local tty = require('core.tty')
 local utils = require('core.utils')
 
 utils.lock_globals()
+
+Buffer.max_open_size = 1000
+local buffer = Buffer.open(core.args[2])
+
+-- buffer:insert(28, '- Wyłącz komputer i pójdź do psychologa.\n')
+-- buffer:delete(73, 1274)
+
+local input = buffer:read(0, 1000)
+local output = ''
+for i = 1, #input do
+  local c = input:sub(i, i)
+  if c:match('[a-z]') then
+    output = output .. c:upper()
+  else
+    output = output .. c:lower()
+  end
+end
+buffer:delete(0, #input)
+buffer:insert(0, output)
+
+buffer:copy(200, buffer, 0, 100)
+buffer:delete(0, 100)
+
+buffer:save(core.args[3])
+
+local start = os.clock()
+while os.clock() - start <= 10 do
+  print(Buffer.check_fs_events())
+end
+
+os.exit(0)
+
 core.add_cleanup(tty.restore)
 tty.setup()
 --tty.clear()

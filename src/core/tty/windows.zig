@@ -57,13 +57,13 @@ fn set_clipboard(vm: *lua.Lua) i32 {
     const bytec = std.unicode.utf8ByteSequenceLength(text[i]) catch {
       _ = c.GlobalFree(copy_handle);
       _ = c.CloseClipboard();
-      vm.raiseErrorStr("text is malformed UTF-8", .{});
-    }
+      vm.raiseErrorStr("malformed UTF-8", .{});
+    };
     j += std.unicode.utf8ToUtf16Le(copy[j ..], text[i .. i + bytec]) catch {
       _ = c.GlobalFree(copy_handle);
       _ = c.CloseClipboard();
-      vm.raiseErrorStr("text is malformed UTF-8", .{});
-    }
+      vm.raiseErrorStr("malformed UTF-8", .{});
+    };
     i += bytec;
   }
   j += std.unicode.utf8ToUtf16Le(copy[j ..], "\x00") catch unreachable;
