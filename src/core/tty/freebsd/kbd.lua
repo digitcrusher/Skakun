@@ -53,7 +53,7 @@ function Kbd:feed(string)
   local i = 1
   while i <= #self.buf do
     local keycode, is_release
-    keycode, is_release, i = self:read_keycode(self.buf, i)
+    keycode, is_release, i = self:take_keycode(self.buf, i)
     if not keycode then break end
 
     local event = {
@@ -82,7 +82,7 @@ function Kbd:feed(string)
   return result
 end
 
-function Kbd:read_keycode(buf, offset)
+function Kbd:take_keycode(buf, offset)
   local a = buf:byte(offset)
   if a then
     return a & 0x7f, a >= 0x80, offset + 1

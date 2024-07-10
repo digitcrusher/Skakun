@@ -9,8 +9,8 @@ capabilities, interpreting received terminal events and modifying, querying and
 tracking the terminal's state, which encompasses the screen contents, the
 cursor, text attributes and screen attributes.
 
-This module sets its __index to `core.tty.system` and extends `getnum` and
-`getstr` with the XTGETTCAP feature that some terminals have.
+This module sets its __index to `core.tty.system` but overrides `getflag`,
+`getnum` and `getstr`.
 
 All of the RGB colors below must have their values in the range of 0-255. All
 of the "named" colors are the ANSI colors - see `tty.ansi_colors` for a list of
@@ -57,6 +57,56 @@ automatic capability detection contraption fails and Skakun, for example,
 doesn't display colors or undercurls. You may and *should* also use this table
 to vary the behaviour of your code to provide the most suitable visuals, if you
 are a plugin developer or just a tinkerer.
+
+## Events and queries
+
+    events = tty.read_events()
+    for _, event in ipairs(events) do
+      event.type
+      event.button, event.alt, event.ctrl, event.shift
+      event.text
+      event.x, event.y
+    end
+
+Reads in all pending data from the terminal, passes it to `tty.input_parser` and
+returns an array of extracted events. `event.type` is one of (button) `'press'`,
+`'repeat'`, `'release'`, (text) `'paste'` or (mouse) `'move'`. For button events
+`event.button` is the name of the key or mouse button - see `tty.buttons` for a
+full list. The `event.alt`, `event.ctrl` and `event.shift` booleans signify
+whether the given modifier was pressed during the event and are present in all
+types of events for now. `event.x` and `event.y` mark the on-grid
+destination/location of the mouse pointer and are present in mouse movement and
+mouse button events.
+
+    tty.input_parser
+
+An *input parser* is an object that has a method named `feed`, which consumes
+one string of data read from the terminal, and parses and returns as many
+events as possible from its internal feed buffer. The default input parser is
+`core.tty.input_parser` but switches to `core.tty.linux.kbd` or
+`core.tty.freebsd.kbd` at initialization if possible.
+
+    promise = tty.query(question, answer_regex)
+
+Sends off a query (`question` to be exact) and jumps. (This is called
+asynchronous I/O.)
+
+    answer = promise()
+
+Forces evaluation of the promise we've been made above by continously reading in
+data from the terminal and trying to find a match for the `answer_regex` we gave
+it earlier, until `tty.timeout` seconds have passed since the last byte read.
+Returns the captures for the match (see `string.match`) or nothing if timed out.
+The result is memoized. Note that the terminal's reply will stay in the input
+buffer, if you don't evaluate the promise.
+
+    promise1 = tty.getflag(capname, [term])
+    promise2 = tty.getnum(capname, [term])
+    promise3 = tty.getstr(capname, [term])
+    bool, int, string = promise1(), promise2(), promise3()
+
+An asynchronous extension of `core.tty.system`'s terminfo query functions, which
+utilizes the XTGETTCAP feature that some terminals provide.
 
 ## Screen contents and cursor movement
 
@@ -164,31 +214,3 @@ black.
 Sets the terminal (system) clipboard contents. I don't think the notion of
 "terminal default" applies to this one. Nevertheless, passing `nil` will clear
 the clipboard.
-
-## Event handling
-
-    events = tty.read_events()
-    for _, event in ipairs(events) do
-      event.type
-      event.button, event.alt, event.ctrl, event.shift
-      event.text
-      event.x, event.y
-    end
-
-Reads in all pending data from the terminal, passes it to `tty.input_parser` and
-returns an array of extracted events. `event.type` is one of (button) `'press'`,
-`'repeat'`, `'release'`, (text) `'paste'` or (mouse) `'move'`. For button events
-`event.button` is the name of the key or mouse button - see `tty.buttons` for a
-full list. The `event.alt`, `event.ctrl` and `event.shift` booleans signify
-whether the given modifier was pressed during the event and are present in all
-types of events for now. `event.x` and `event.y` mark the on-grid
-destination/location of the mouse pointer and are present in mouse movement and
-mouse button events.
-
-    tty.input_parser
-
-An *input parser* is an object that has a method named `feed`, which consumes
-one string of data read from the terminal, and parses and returns as many
-events as possible from its internal feed buffer. The default input parser is
-`core.tty.input_parser` but switches to `core.tty.linux.kbd` or
-`core.tty.freebsd.kbd` at initialization if possible.

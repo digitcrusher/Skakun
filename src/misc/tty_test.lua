@@ -21,7 +21,7 @@ local function hue_color(hue)
          math.floor(255 * math.min(2 - math.abs(4 * hue - 2), 1)),
          math.floor(255 * math.min(math.max(4 * hue - 2, 0), 1))
 end
-local width = tty.getnum('cols')
+local width = tty.getnum('cols')()
 for i = 1, width do
   local progress = (i - 1) / (width - 1)
   tty.set_foreground(hue_color(progress))
@@ -32,29 +32,12 @@ tty.set_foreground()
 tty.set_background()
 
 -- List the terminal's capabilities
-local function fancy_write(value)
-  if type(value) == 'table' then
-    tty.write('{')
-    for k, v in pairs(value) do
-      fancy_write(k)
-      tty.write(':')
-      fancy_write(v)
-      tty.write(',')
-    end
-    tty.write('}')
-  elseif type(value) == 'string' then
-    tty.write("'", value:gsub("'", "\\'"), "'")
-  elseif value == true then
-    tty.write('true')
-  elseif value == false then
-    tty.write('false')
-  elseif value == nil then
-    tty.write('nil')
-  else
-    tty.write(value)
-  end
+for key, value in pairs(tty.cap) do
+  tty.set_bold(true)
+  tty.write(key)
+  tty.set_bold(false)
+  tty.write('=', tostring(value), ' ')
 end
-fancy_write(tty.cap)
 tty.write('\r\n')
 
 -- ANSI colors
@@ -69,7 +52,7 @@ for _, bg in ipairs(tty.ansi_colors) do
   tty.write(' ', bg, '\r\n')
 end
 
--- Text style
+-- Bold, italic, underline, strikethrough, hyperlink
 tty.set_bold(true)
 tty.write('bold')
 tty.set_bold()
@@ -140,9 +123,18 @@ end
 -- Mouse shapes part 2
 tty.set_mouse_shape('default')
 
--- Keyboard input, cursor shapes and window title
-tty.set_cursor(true)
+-- Keyboard input
 tty.write('Press ')
+tty.set_italic(true)
+tty.write('enter')
+tty.set_italic(false)
+tty.write(' to proceed to the next part of the experiment.')
+tty.flush()
+while (tty.read_events()[1] or {}).button ~= 'enter' do end
+tty.write('\r\n')
+
+-- All events, cursor shapes and window title
+tty.write('Good job! Now you may press ')
 tty.set_italic(true)
 tty.write('escape')
 tty.set_italic()
@@ -152,15 +144,26 @@ for i = 1, math.huge do
   local events = tty.read_events()
   for _, event in ipairs(events) do
     tty.write(event.type, '\t')
+
     if event.alt then tty.write('alt+') end
     if event.ctrl then tty.write('ctrl+') end
     if event.shift then tty.write('shift+') end
-    if event.button then tty.write(event.button, '\t') end
-    if event.text then tty.write('‘', event.text, '’') end
-    if event.x or event.y then tty.write('(', tostring(event.x), ', ', tostring(event.y), ')') end
+    if event.button then
+      tty.write(event.button, '\t')
+    end
+
+    if event.text then
+      tty.write('‘', event.text:gsub('\r\n', '\n'):gsub('\r', '\n'):gsub('\n', '\r\n'), '’')
+    end
+
+    if event.x or event.y then
+      tty.write(tostring(event.x), ' ', tostring(event.y))
+    end
+
     tty.write('\r\n')
   end
-  if #events >= 1 and events[1].button == 'escape' then break end
+  if (events[1] or {}).button == 'escape' then break end
+
   tty.set_cursor_shape(tty.cursor_shapes[i % #tty.cursor_shapes + 1])
   tty.set_window_title('The time is: ' .. os.date())
   tty.flush()

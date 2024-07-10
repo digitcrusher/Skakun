@@ -5,9 +5,11 @@ local tty = require('core.tty')
 local utils = require('core.utils')
 
 utils.lock_globals()
+
 core.add_cleanup(stderr.restore)
 stderr.redirect()
-stderr.info(here, 'Skakun ', core.version, ' on ', core.platform)
+stderr.info(here, 'Skakun ', core.version, ' on ', core.platform, ', ', os.date())
+
 core.add_cleanup(tty.restore)
 tty.setup()
 

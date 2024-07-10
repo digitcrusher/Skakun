@@ -57,7 +57,7 @@ function Kbd:feed(string)
   local i = 1
   while i <= #self.buf do
     local keycode, is_release
-    keycode, is_release, i = self:read_keycode(self.buf, i)
+    keycode, is_release, i = self:take_keycode(self.buf, i)
     if not keycode then break end
 
     local state = self.shift_state | self.slock_state
@@ -87,7 +87,7 @@ function Kbd:feed(string)
   return result
 end
 
-function Kbd:read_keycode(buf, offset)
+function Kbd:take_keycode(buf, offset)
   local a, b, c = buf:byte(offset, offset + 2)
   if not a then
     return nil, nil, offset
