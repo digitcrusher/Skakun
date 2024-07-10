@@ -135,6 +135,8 @@ local tty = setmetatable({
     clipboard = 'remote', -- Must be one of: 'remote', 'local', false.
   },
 
+  timeout = 0.05,
+
   state = {},
 }, { __index = system })
 
@@ -163,6 +165,7 @@ function tty.setup()
   tty.write('\27[?1006h') -- Extend the range of mouse coordinates the terminal is able to report
   tty.write('\27]22;>default\27\\', '\27]22;\27\\') -- Push the terminal default onto the pointer shape stack
   tty.write('\27[22;0t') -- Save the window title on the stack
+  tty.load_ansi_color_palette()
 end
 
 function tty.restore()
@@ -183,188 +186,303 @@ function tty.restore()
   tty.close()
 end
 
+function tty.do_async(func)
+  local queries = {}
+  local function query(question, answer_regex)
+    tty.write(question)
+    local query = { answer_regex = answer_regex }
+    queries[#queries + 1] = query
+    return function()
+      return coroutine.yield(query)
+    end
+  end
+
+  local co = coroutine.create(func)
+  local selected_answer = table.pack(nil, nil, query)
+  local buf = ''
+  while true do
+    local results = table.pack(coroutine.resume(co, table.unpack(selected_answer, 3, selected_answer.n)))
+    if not results[1] then
+      error(results[2])
+    elseif coroutine.status(co) == 'dead' then
+      return table.unpack(results, 2, results.n)
+    end
+
+    selected_answer = nil
+    local last_read = os.clock()
+    while not selected_answer do
+      local chunk = tty.read()
+      if #chunk > 0 then
+        buf = buf .. chunk
+        last_read = os.clock()
+      elseif os.clock() - last_read >= tty.timeout then
+        selected_answer = table.pack()
+        break
+      end
+
+      for _, query in ipairs(queries) do
+        if not query.answer then
+          local match = table.pack(buf:find(query.answer_regex))
+          if match[1] then
+            query.answer = match
+            buf = buf:sub(1, match[1] - 1) .. buf:sub(match[1] + 1)
+          end
+        end
+
+        if query == results[2] then
+          selected_answer = query.answer
+          break
+        end
+      end
+    end
+  end
+end
+
 function tty.detect_caps()
-  -- kitty's terminfo was used as a reference of the available capnames:
-  -- https://github.com/kovidgoyal/kitty/blob/master/kitty/terminfo.py
-  -- VTE's commit history: https://gitlab.gnome.org/GNOME/vte/-/commits/master
-  -- Konsole's commit history: https://invent.kde.org/utilities/konsole/-/commits/master
-  -- …which, geez, a pain to follow it was.
-  -- xterm's changelog: https://invisible-island.net/xterm/xterm.log.html
-  local vte = tonumber(os.getenv('VTE_VERSION')) or -1 -- VTE 0.34.5 (8bea17d1, 68046665)
-  local konsole = tonumber(os.getenv('KONSOLE_VERSION')) or -1 -- Konsole 18.07.80 (b0d3d83e, 7e040b61)
-  local xterm = os.getenv('XTERM_VERSION')
-  if xterm then
-    xterm = tonumber(xterm:match('%((%d+)%)'))
-  else
-    xterm = -1
-  end
-
-  -- This is an XTGETTCAP, which allows us to forget about the unreliable
-  -- system-wide database and query the terminal's own terminfo entry. It's
-  -- supported by… a *few* terminals. :/
-  -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Device-Control-functions
-  tty.write('\27P+q', utils.hex_encode('cr'), '\27\\') -- An example query for "cr"
-  tty.read_events()
-  tty.flush()
-  if tty.read():match('^\27P[01]%+r.*\27\\$') then -- The terminal has replied with a well-formed answer.
-    -- Flags don't work over XTGETTCAP, in kitty at least.
-    function tty.getnum(capname, term)
-      if term ~= nil then
-        return system.getnum(capname, term)
-      end
-
-      tty.write('\27P+q', utils.hex_encode(capname), '\27\\')
-      tty.read_events()
-      tty.flush()
-      local result = tty.read():match('^\27P1%+r.*=(%x*)\27\\$')
-      if result then
-        result = tonumber(utils.hex_decode(result))
-      end
-      return result
+  tty.do_async(function(query)
+    -- kitty's terminfo was used as a reference of the available capnames:
+    -- https://github.com/kovidgoyal/kitty/blob/master/kitty/terminfo.py
+    -- VTE's commit history: https://gitlab.gnome.org/GNOME/vte/-/commits/master
+    -- Konsole's commit history: https://invent.kde.org/utilities/konsole/-/commits/master
+    -- …which, geez, a pain to follow it was.
+    -- xterm's changelog: https://invisible-island.net/xterm/xterm.log.html
+    local vte = tonumber(os.getenv('VTE_VERSION')) or -1 -- VTE 0.34.5 (8bea17d1, 68046665)
+    local konsole = tonumber(os.getenv('KONSOLE_VERSION')) or -1 -- Konsole 18.07.80 (b0d3d83e, 7e040b61)
+    local xterm = os.getenv('XTERM_VERSION')
+    if xterm then
+      xterm = tonumber(xterm:match('%((%d+)%)'))
+    else
+      xterm = -1
     end
 
-    function tty.getstr(capname, term)
-      if term ~= nil then
-        return system.getstr(capname, term)
-      end
-
-      tty.write('\27P+q', utils.hex_encode(capname), '\27\\')
-      tty.read_events()
-      tty.flush()
-      local result = tty.read():match('^\27P1%+r.*=(%x*)\27\\$')
-      if result then
-        result = utils.hex_decode(result)
-      end
-      return result
-    end
-  end
-
-  -- VTE 0.35.1 (c5a32b49), Konsole 3.5.4 (f34d8203)
-  -- It would probably be better to follow: https://github.com/termstandard/colors#querying-the-terminal
-  -- We could also assume that 256-color terminals are always true-color:
-  -- tty.getflag('initc') or os.getenv('TERM'):find('256color')
-  if vte >= 3501 or konsole >= 030504 or xterm >= 331 or tty.getflag('Tc') or os.getenv('COLORTERM') == 'truecolor' or os.getenv('COLORTERM') == '24bit' then
-    tty.cap.foreground = 'true_color'
-    tty.cap.background = 'true_color'
-  elseif tty.getnum('colors') >= 8 then
-    tty.cap.foreground = 'ansi'
-    tty.cap.background = 'ansi'
-  else
-    -- I have yet to see a terminal in the 21st century that does not support
-    -- any kind of text coloring.
-    tty.cap.foreground = false
-    tty.cap.background = false
-  end
-
-  -- The Linux console interprets "bold" in its own way.
-  if vte >= 0 or konsole >= 0 or xterm >= 0 or os.getenv('TERM') ~= 'linux' and tty.getstr('bold') then
-    tty.cap.bold = true
-  else
-    tty.cap.bold = false
-  end
-
-  -- VTE 0.34.1 (ad68297c), Konsole 4.10.80 (68a98ed7)
-  if vte >= 3401 or konsole >= 041080 or xterm >= 305 or tty.getstr('sitm') and tty.getstr('ritm') then
-    tty.cap.italic = true
-  else
-    tty.cap.italic = false
-  end
-
-  -- Konsole 0.8.44 (https://invent.kde.org/utilities/konsole/-/blob/d8f74118/ChangeLog#L99)
-  if vte >= 0 or konsole >= 000844 or xterm >= 0 or os.getenv('TERM') ~= 'linux' and tty.getstr('smul') and tty.getstr('rmul') then
-    tty.cap.underline = true
-  else
-    tty.cap.underline = false
-  end
-
-  -- VTE 0.51.2 - color, double, curly (efaf8f3c, a8af47bc); VTE 0.75.90 - dotted, dashed (bec7e6a2); Konsole 22.11.80 (76f879cd)
-  -- Smulx does not necessarily indicate color support.
-  if vte >= 5102 or konsole >= 221180 or tty.getflag('Su') or tty.getstr('Setulc') or tty.getstr('Smulx') then
-    tty.cap.underline_color = 'true_color'
-    tty.cap.underline_shape = true
-  else
-    tty.cap.underline_color = false
-    tty.cap.underline_shape = false
-  end
-
-  -- VTE 0.10.2 (a175a436), Konsole 16.07.80 (84b43dfb)
-  if vte >= 1002 or konsole >= 160780 or xterm >= 305 or tty.getstr('smxx') and tty.getstr('rmxx') then
-    tty.cap.strikethrough = true
-  else
-    tty.cap.strikethrough = false
-  end
-
-  -- VTE 0.49.1 (c9e7cbab), Konsole 20.11.80 (faceafcc)
-  -- There is currently no universal way to detect hyperlink support.
-  -- Further reading: https://github.com/kovidgoyal/kitty/issues/68
-  tty.cap.hyperlink = vte >= 4901 or konsole >= 201180 or true
-
-  -- VTE 0.1.0 (81af00a6), Konsole 0.8.42 (https://invent.kde.org/utilities/konsole/-/blob/d8f74118/ChangeLog#L107)
-  if vte >= 0100 or konsole >= 000842 or xterm >= 0 or tty.getstr('civis') and tty.getstr('cnorm') then
-    tty.cap.cursor = true
-  else
-    tty.cap.cursor = false
-  end
-
-  -- VTE 0.39.0 (430965a0); Konsole 18.07.80 (7c2a1164); xterm 252 - block, slab; xterm 282 - bar
-  if vte >= 3900 or konsole >= 180780 or xterm >= 282 or tty.getstr('Ss') and tty.getstr('Se') then
-    tty.cap.cursor_shape = true
-  else
-    tty.cap.cursor_shape = false
-  end
-
-  -- Reference: https://sw.kovidgoyal.net/kitty/pointer-shapes/#querying-support
-  tty.write('\27]22;?__current__\27\\')
-  tty.read_events()
-  tty.flush()
-  -- Kitty sends out a colon, even though its own docs say there should be
-  -- a semicolon there???
-  if tty.read():match('^\27]22:.*\27\\$') then
-    tty.cap.mouse_shape = true
-  else
-    tty.cap.mouse_shape = false
-  end
-
-  -- VTE 0.10.14 (38fb4802, f39e2815)
-  if vte >= 1014 or xterm >= 0 or tty.getstr('tsl') and tty.getstr('fsl') and tty.getstr('dsl') then
-    tty.cap.window_title = true
-  else
-    tty.cap.window_title = false
-  end
-
-  -- VTE 0.35.2 (1b8c6b1a), Konsole 3.3.0 (c20973ec)
-  -- This does not appear to have its own terminfo cap.
-  if vte >= 3502 or konsole >= 030300 or xterm >= 0 then
-    tty.cap.window_background = 'true_color'
-  else
-    -- …But we can ask the terminal to send us the current background color and
-    -- see if it understands us.
-    -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Operating-System-Commands
-    tty.write('\27]11;?\27\\')
-    tty.read_events()
+    -- This is an XTGETTCAP, which allows us to forget about the unreliable
+    -- system-wide database and query the terminal's own terminfo entry. It's
+    -- supported by… a *few* terminals. :/
+    -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Device-Control-functions
+    local has_xtgettcap = query( -- An example query for "cr"
+      '\27P+q' .. utils.hex_encode('cr') .. '\27\\',
+      '\27P[01]%+r.*\27\\'
+    )
     tty.flush()
+    local getnum, getstr
+    if has_xtgettcap() then -- The terminal has replied with a well-formed answer.
+      -- Flags don't work over XTGETTCAP, in kitty at least.
+      function getnum(capname)
+        capname = utils.hex_encode(capname)
+        local future = query('\27P+q' .. capname .. '\27\\', '\27P([01])%+r' .. capname .. '=?(%x*)\27\\')
+        return function()
+          local ok, value = future()
+          if ok == '1' then
+            return tonumber(utils.hex_decode())
+          else
+            return nil
+          end
+        end
+      end
+
+      function getstr(capname)
+        capname = utils.hex_encode(capname)
+        local future = query('\27P+q' .. capname .. '\27\\', '\27P([01])%+r' .. capname .. '=?(%x*)\27\\')
+        return function()
+          local ok, value = future()
+          if ok == '1' then
+            return utils.hex_decode()
+          else
+            return nil
+          end
+        end
+      end
+
+    else
+      function getnum(capname)
+        return function()
+          return tty.getnum(capname)
+        end
+      end
+      function getstr(capname)
+        return function()
+          return tty.getstr(capname)
+        end
+      end
+    end
+
+    local Tc = function() return getflag('Tc') end
+    local colors = getnum('colors')
+    local bold = getstr('bold')
+    local sitm = getstr('sitm')
+    local ritm = getstr('ritm')
+    local smul = getstr('smul')
+    local rmul = getstr('rmul')
+    local Su = function() return getflag('Su') end
+    local Setulc = getstr('Setulc')
+    local Smulx = getstr('Smulx')
+    local smxx = getstr('smxx')
+    local rmxx = getstr('rmxx')
+    local civis = getstr('civis')
+    local cnorm = getstr('cnorm')
+    local Ss = getstr('Ss')
+    local Se = getstr('Se')
+    local tsl = getstr('tsl')
+    local fsl = getstr('fsl')
+    local dsl = getstr('dsl')
+    local Ms = getstr('Ms')
+    -- Reference: https://sw.kovidgoyal.net/kitty/pointer-shapes/#querying-support
+    -- Kitty sends out a colon, even though its own docs say there should be
+    -- a semicolon there???
+    local has_mouse_shape = query('\27]22;?__current__\27\\', '\27]22:.*\27\\')
+    -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Operating-System-Commands
     -- Konsole and st send BEL instead of ST at the end for some reason.
-    if tty.read():match('^\27]11;(.*)\27?\\?\7?$') then
+    local has_window_background = query('\27]11;?\27\\', '\27]11;.*\27?\\?\7?')
+    tty.flush()
+
+    -- VTE 0.35.1 (c5a32b49), Konsole 3.5.4 (f34d8203)
+    -- It would probably be better to follow: https://github.com/termstandard/colors#querying-the-terminal
+    -- We could also assume that 256-color terminals are always true-color:
+    -- tty.getflag('initc') or os.getenv('TERM'):find('256color')
+    if vte >= 3501 or konsole >= 030504 or xterm >= 331 or Tc() or os.getenv('COLORTERM') == 'truecolor' or os.getenv('COLORTERM') == '24bit' then
+      tty.cap.foreground = 'true_color'
+      tty.cap.background = 'true_color'
+    elseif colors() >= 8 then
+      tty.cap.foreground = 'ansi'
+      tty.cap.background = 'ansi'
+    else
+      -- I have yet to see a terminal in the 21st century that does not support
+      -- any kind of text coloring.
+      tty.cap.foreground = false
+      tty.cap.background = false
+    end
+
+    -- The Linux console interprets "bold" in its own way.
+    if vte >= 0 or konsole >= 0 or xterm >= 0 or os.getenv('TERM') ~= 'linux' and bold() then
+      tty.cap.bold = true
+    else
+      tty.cap.bold = false
+    end
+
+    -- VTE 0.34.1 (ad68297c), Konsole 4.10.80 (68a98ed7)
+    if vte >= 3401 or konsole >= 041080 or xterm >= 305 or sitm() and ritm() then
+      tty.cap.italic = true
+    else
+      tty.cap.italic = false
+    end
+
+    -- Konsole 0.8.44 (https://invent.kde.org/utilities/konsole/-/blob/d8f74118/ChangeLog#L99)
+    if vte >= 0 or konsole >= 000844 or xterm >= 0 or os.getenv('TERM') ~= 'linux' and smul() and rmul() then
+      tty.cap.underline = true
+    else
+      tty.cap.underline = false
+    end
+
+    -- VTE 0.51.2 - color, double, curly (efaf8f3c, a8af47bc); VTE 0.75.90 - dotted, dashed (bec7e6a2); Konsole 22.11.80 (76f879cd)
+    -- Smulx does not necessarily indicate color support.
+    if vte >= 5102 or konsole >= 221180 or Su() or Setulc() or Smulx() then
+      tty.cap.underline_color = 'true_color'
+      tty.cap.underline_shape = true
+    else
+      tty.cap.underline_color = false
+      tty.cap.underline_shape = false
+    end
+
+    -- VTE 0.10.2 (a175a436), Konsole 16.07.80 (84b43dfb)
+    if vte >= 1002 or konsole >= 160780 or xterm >= 305 or smxx() and rmxx() then
+      tty.cap.strikethrough = true
+    else
+      tty.cap.strikethrough = false
+    end
+
+    -- VTE 0.49.1 (c9e7cbab), Konsole 20.11.80 (faceafcc)
+    -- There is currently no universal way to detect hyperlink support.
+    -- Further reading: https://github.com/kovidgoyal/kitty/issues/68
+    tty.cap.hyperlink = vte >= 4901 or konsole >= 201180 or true
+
+    -- VTE 0.1.0 (81af00a6), Konsole 0.8.42 (https://invent.kde.org/utilities/konsole/-/blob/d8f74118/ChangeLog#L107)
+    if vte >= 0100 or konsole >= 000842 or xterm >= 0 or civis() and cnorm() then
+      tty.cap.cursor = true
+    else
+      tty.cap.cursor = false
+    end
+
+    -- VTE 0.39.0 (430965a0); Konsole 18.07.80 (7c2a1164); xterm 252 - block, slab; xterm 282 - bar
+    if vte >= 3900 or konsole >= 180780 or xterm >= 282 or Ss() and Se() then
+      tty.cap.cursor_shape = true
+    else
+      tty.cap.cursor_shape = false
+    end
+
+    if has_mouse_shape() then
+      tty.cap.mouse_shape = true
+    else
+      tty.cap.mouse_shape = false
+    end
+
+    -- VTE 0.10.14 (38fb4802, f39e2815)
+    if vte >= 1014 or xterm >= 0 or tsl() and fsl() and dsl() then
+      tty.cap.window_title = true
+    else
+      tty.cap.window_title = false
+    end
+
+    -- VTE 0.35.2 (1b8c6b1a), Konsole 3.3.0 (c20973ec)
+    -- This does not appear to have its own terminfo cap.
+    if vte >= 3502 or konsole >= 030300 or xterm >= 0 then
       tty.cap.window_background = 'true_color'
     else
+      -- …But we can ask the terminal to send us the current background color and
+      -- see if it understands us.
+      if has_window_background() then
+        tty.cap.window_background = 'true_color'
+      else
+        tty.cap.window_background = false
+      end
+    end
+
+    -- You may have to explicitly enable this: https://github.com/tmux/tmux/wiki/Clipboard
+    if xterm >= 238 or Ms() then
+      tty.cap.clipboard = 'remote'
+    else
+      tty.cap.clipboard = 'local'
+    end
+
+    -- Further reading: https://no-color.org/
+    if os.getenv('NO_COLOR') and os.getenv('NO_COLOR') ~= '' then
+      tty.cap.foreground = false
+      tty.cap.background = false
+      tty.cap.underline_color = false
       tty.cap.window_background = false
     end
-  end
+  end)
+end
 
-  -- You may have to explicitly enable this: https://github.com/tmux/tmux/wiki/Clipboard
-  if xterm >= 238 or tty.getstr('Ms') then
-    tty.cap.clipboard = 'remote'
-  else
-    tty.cap.clipboard = 'local'
-  end
+function tty.load_ansi_color_palette()
+  tty.do_async(function(query)
+    -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Operating-System-Commands
+    local futures = {}
+    for i, name in ipairs(tty.ansi_colors) do
+      futures[name] = query(
+        '\27]4;' .. i .. ';?\27\\',
+        -- Konsole and st send BEL instead of ST at the end for some reason.
+        -- Fun fact: We can and may send RGB colors to the terminal in two
+        -- different formats (#RRGGBB and rgb:RR/GG/BB) as part of the various
+        -- sequences originating from xterm, but why do terminals always have to
+        -- send back the second one? Well, xterm uses XParseColor for parsing
+        -- our colors and it turns out that the former format (or in the words
+        -- of X11 itself: "RGB Device") is actually deprecated by XParseColor!
+        -- Source: man 3 XParseColor
+        '\27]4;' .. i .. ';rgb:(%x%x)%x*/(%x%x)%x*/(%x%x)%x*\27?\\?\7?'
+      )
+    end
+    tty.flush()
 
-  -- Further reading: https://no-color.org/
-  if os.getenv('NO_COLOR') and os.getenv('NO_COLOR') ~= '' then
-    tty.cap.foreground = false
-    tty.cap.background = false
-    tty.cap.underline_color = false
-    tty.cap.window_background = false
-  end
+    tty.ansi_color_palette = {}
+    for name, future in pairs(futures) do
+      local red, green, blue = future()
+      tty.ansi_color_palette[name] = {
+        red = tonumber(red, 16),
+        green = tonumber(green, 16),
+        blue = tonumber(blue, 16),
+      }
+    end
+  end)
 end
 
 function tty.sync_begin()
@@ -577,38 +695,11 @@ function tty.load_functions()
       elseif red then
         -- Sadly, there appears to be no escape sequence for ANSI underline
         -- colors. We have to fetch the RGB value from the terminal.
-        -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Operating-System-Commands
-        local ansi_color_codes = {
-          black = 0,
-          red = 1,
-          green = 2,
-          yellow = 3,
-          blue = 4,
-          magenta = 5,
-          cyan = 6,
-          white = 7,
-          bright_black = 8,
-          bright_red = 9,
-          bright_green = 10,
-          bright_yellow = 11,
-          bright_blue = 12,
-          bright_magenta = 13,
-          bright_cyan = 14,
-          bright_white = 15,
-        }
-        tty.write('\27]4;', ansi_color_codes[red], ';?\27\\')
-        tty.read_events()
-        tty.flush()
-        -- Konsole and st send BEL instead of ST at the end for some reason.
-        -- Fun fact: We can and may send RGB colors to the terminal in two
-        -- different formats (#RRGGBB and rgb:RR/GG/BB) as part of the various
-        -- sequences originating from xterm, but why do terminals always have to
-        -- send back the second one? Well, xterm uses XParseColor for parsing
-        -- our colors and it turns out that the former format (or in the words
-        -- of X11 itself: "RGB Device") is actually deprecated by XParseColor!
-        -- Source: man 3 XParseColor
-        local red, green, blue = tty.read():match('^\27]4;%d*;rgb:(%x%x)%x*/(%x%x)%x*/(%x%x)%x*\27?\\?\7?$')
-        tty.set_underline_color(tonumber(red, 16), tonumber(green, 16), tonumber(blue, 16))
+        tty.set_underline_color(
+          tty.ansi_color_palette[red].red,
+          tty.ansi_color_palette[red].green,
+          tty.ansi_color_palette[red].blue
+        )
         tty.state.underline_color = red
       else
         tty.write('\27[59m')
@@ -745,29 +836,11 @@ function tty.load_functions()
       elseif red then
         -- We have to fetch the ANSI color's RGB value from the terminal because
         -- there's no other way.
-        local ansi_color_codes = {
-          black = 0,
-          red = 1,
-          green = 2,
-          yellow = 3,
-          blue = 4,
-          magenta = 5,
-          cyan = 6,
-          white = 7,
-          bright_black = 8,
-          bright_red = 9,
-          bright_green = 10,
-          bright_yellow = 11,
-          bright_blue = 12,
-          bright_magenta = 13,
-          bright_cyan = 14,
-          bright_white = 15,
-        }
-        tty.write('\27]4;', ansi_color_codes[red], ';?\27\\')
-        tty.read_events()
-        tty.flush()
-        -- Konsole and st send BEL instead of ST at the end for some reason.
-        tty.write('\27]11;', tty.read():match('^\27]4;%d*;(.*)\27?\\?\7?$'), '\27\\')
+        tty.set_window_background(
+          tty.ansi_color_palette[red].red,
+          tty.ansi_color_palette[red].green,
+          tty.ansi_color_palette[red].blue
+        )
         tty.state.window_background = red
       else
         tty.write('\27]111;\27\\')

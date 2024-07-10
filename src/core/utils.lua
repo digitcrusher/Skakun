@@ -19,10 +19,10 @@ local utils = {}
 function utils.lock_globals()
   setmetatable(_G, {
     __newindex = function(table, key, value)
-      error('cannot create new global variable: ' .. key)
+      error('will not create new global variable: ' .. key, 2)
     end,
     __index = function(table, key, value)
-      error('undefined variable: ' .. key)
+      error('undefined variable: ' .. key, 2)
     end,
   })
 end
