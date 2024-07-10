@@ -21,8 +21,8 @@ const c = @cImport({
   @cInclude("windows.h");
 });
 
-fn get_last_error() [*:0]const u8 {
-  return @errorName(std.os.windows.kernel32.GetLastError()).ptr;
+fn get_last_error() []const u8 {
+  return @errorName(std.os.windows.kernel32.GetLastError());
 }
 
 fn set_clipboard(vm: *lua.Lua) i32 {

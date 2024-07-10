@@ -24,7 +24,7 @@ var editor: buffer.Editor = undefined;
 
 fn raise_err(vm: *lua.Lua, err: buffer.Error, err_msg: ?[:0]u8) noreturn {
   // Most of these were ripped straight out of glibc.
-  const zig_err: [*:0]const u8 = switch(err) {
+  const zig_err = switch(err) {
     error.AccessDenied => "permission denied",
     error.AntivirusInterference => "antivirus interfered with file operations",
     error.BadPathName => "invalid path name",
@@ -82,14 +82,14 @@ fn raise_err(vm: *lua.Lua, err: buffer.Error, err_msg: ?[:0]u8) noreturn {
     error.WouldBlock => unreachable, // We don't use O_NONBLOCK.
   };
   if(err_msg) |x| {
-    vm.raiseErrorStr("%s (%s)", .{x.ptr, zig_err});
+    vm.raiseErrorStr("%s (%s)", .{x.ptr, zig_err.ptr});
   } else {
-    vm.raiseErrorStr("%s", .{zig_err});
+    vm.raiseErrorStr("%s", .{zig_err.ptr});
   }
 }
 
 fn new(vm: *lua.Lua) i32 {
-  vm.newUserdata(*Buffer, 0).* = Buffer.create(&editor, null) catch |x| raise_err(vm, x, null);
+  vm.newUserdata(*Buffer, 0).* = Buffer.create(&editor, null) catch |err| raise_err(vm, err, null);
   vm.setMetatableRegistry("core.buffer");
   return 1;
 }
@@ -97,14 +97,14 @@ fn new(vm: *lua.Lua) i32 {
 fn open(vm: *lua.Lua) i32 {
   const path = vm.checkString(1);
 
-  _ = vm.getField(lua.registry_index, "_LOADED");
-  _ = vm.getField(-1, "core.buffer");
+  vm.getSubtable(lua.registry_index, "_LOADED") catch unreachable;
+  vm.getSubtable(-1, "core.buffer") catch unreachable;
   _ = vm.getField(-1, "max_open_size");
   editor.max_open_size = @intCast(vm.checkInteger(-1));
-  vm.pop(2);
+  vm.pop(3);
 
   var err_msg: ?[:0]u8 = null;
-  vm.newUserdata(*Buffer, 0).* = editor.open_z(path, &err_msg) catch |x| raise_err(vm, x, err_msg);
+  vm.newUserdata(*Buffer, 0).* = editor.open_z(path, &err_msg) catch |err| raise_err(vm, err, err_msg);
   vm.setMetatableRegistry("core.buffer");
   return 1;
 }
@@ -118,7 +118,7 @@ fn save(vm: *lua.Lua) i32 {
   const self = vm.checkUserdata(*Buffer, 1, "core.buffer").*;
   const path = vm.checkString(2);
   var err_msg: ?[:0]u8 = null;
-  self.save_z(path, &err_msg) catch |x| raise_err(vm, x, null);
+  self.save_z(path, &err_msg) catch |err| raise_err(vm, err, null);
   return 0;
 }
 
@@ -139,7 +139,7 @@ fn read(vm: *lua.Lua) i32 {
     raise_err(vm, error.OutOfBounds, null);
   }
   var result: lua.Buffer = undefined;
-  const readc = self.read(@intCast(start), result.initSize(vm, @intCast(end - start))) catch |x| raise_err(vm, x, null);
+  const readc = self.read(@intCast(start), result.initSize(vm, @intCast(end - start))) catch |err| raise_err(vm, err, null);
   std.debug.assert(readc == end - start);
   result.pushResultSize(readc);
   return 1;
@@ -149,7 +149,7 @@ fn insert(vm: *lua.Lua) i32 {
   const self = vm.checkUserdata(*Buffer, 1, "core.buffer").*;
   const offset = vm.checkInteger(2);
   const data = vm.checkString(3);
-  self.insert(@intCast(offset), data) catch |x| raise_err(vm, x, null);
+  self.insert(@intCast(offset), data) catch |err| raise_err(vm, err, null);
   return 0;
 }
 
@@ -157,7 +157,7 @@ fn delete(vm: *lua.Lua) i32 {
   const self = vm.checkUserdata(*Buffer, 1, "core.buffer").*;
   const start = vm.checkInteger(2);
   const end = vm.checkInteger(3);
-  self.delete(@intCast(start), @intCast(end)) catch |x| raise_err(vm, x, null);
+  self.delete(@intCast(start), @intCast(end)) catch |err| raise_err(vm, err, null);
   return 0;
 }
 
@@ -167,7 +167,7 @@ fn copy(vm: *lua.Lua) i32 {
   const src = vm.checkUserdata(*Buffer, 3, "core.buffer").*;
   const start = vm.checkInteger(4);
   const end = vm.checkInteger(5);
-  self.copy(@intCast(offset), src, @intCast(start), @intCast(end)) catch |x| raise_err(vm, x, null);
+  self.copy(@intCast(offset), src, @intCast(start), @intCast(end)) catch |err| raise_err(vm, err, null);
   return 0;
 }
 
@@ -189,7 +189,7 @@ fn is_frozen(vm: *lua.Lua) i32 {
 fn thaw(vm: *lua.Lua) i32 {
   const self = vm.checkUserdata(*Buffer, 1, "core.buffer").*;
   if(self.is_frozen) {
-    const result = self.thaw() catch |x| raise_err(vm, x, null);
+    const result = self.thaw() catch |err| raise_err(vm, err, null);
     vm.newUserdata(*Buffer, 0).* = result;
     vm.setMetatableRegistry("core.buffer");
   }
@@ -198,7 +198,7 @@ fn thaw(vm: *lua.Lua) i32 {
 }
 
 fn load(vm: *lua.Lua) i32 {
-  vm.checkUserdata(*Buffer, 1, "core.buffer").*.load() catch |x| raise_err(vm, x, null);
+  vm.checkUserdata(*Buffer, 1, "core.buffer").*.load() catch |err| raise_err(vm, err, null);
   return 0;
 }
 
@@ -212,8 +212,8 @@ fn has_corrupt_mmap(vm: *lua.Lua) i32 {
   return 1;
 }
 
-fn check_fs_events(vm: *lua.Lua) i32 {
-  vm.pushBoolean(editor.check_fs_events());
+fn validate_mmaps(vm: *lua.Lua) i32 {
+  vm.pushBoolean(editor.validate_mmaps());
   return 1;
 }
 
@@ -235,7 +235,7 @@ const funcs = [_]lua.FnReg{
   .{ .name = "load", .func = lua.wrap(load) },
   .{ .name = "has_healthy_mmap", .func = lua.wrap(has_healthy_mmap) },
   .{ .name = "has_corrupt_mmap", .func = lua.wrap(has_corrupt_mmap) },
-  .{ .name = "check_fs_events", .func = lua.wrap(check_fs_events) },
+  .{ .name = "validate_mmaps", .func = lua.wrap(validate_mmaps) },
 };
 
 var is_deinit = false;
@@ -263,8 +263,8 @@ pub fn luaopen(vm: *lua.Lua) i32 {
   vm.setField(-2, "__len");
   vm.pop(1);
 
-  _ = vm.getField(lua.registry_index, "_LOADED");
-  _ = vm.getField(-1, "core");
+  vm.getSubtable(lua.registry_index, "_LOADED") catch unreachable;
+  vm.getSubtable(-1, "core") catch unreachable;
   _ = vm.getField(-1, "add_cleanup");
   vm.pushFunction(lua.wrap(cleanup));
   vm.call(1, 0);

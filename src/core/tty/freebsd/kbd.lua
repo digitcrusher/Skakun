@@ -14,6 +14,8 @@
 -- You should have received a copy of the GNU General Public License
 -- along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+local here = ...
+local stderr = require('core.stderr')
 local system = require('core.tty.freebsd.system')
 local c = system
 
@@ -64,10 +66,16 @@ function Kbd:feed(string)
     local ok, text = pcall(self.handle_keycode, self, keycode, is_release)
     if ok then
       event.text = text
+    else
+      stderr.error(here, 'keycode handler failed:\n', debug.traceback(text))
     end
     self.is_pressed[keycode] = not is_release
 
-    result[#result + 1] = event
+    if event.button then
+      result[#result + 1] = event
+    else
+      stderr.warn(here, 'unknown keycode: ', keycode)
+    end
   end
   self.buf = self.buf:sub(i)
 
@@ -203,6 +211,8 @@ function Kbd:handle_keycode(keycode, is_release)
       system.set_active_vc(system.get_active_vc() + 1)
     elseif action == c.PREV then
       system.set_active_vc(system.get_active_vc() - 1)
+    else
+      stderr.warn(here, 'unhandled special key action: ', action)
     end
 
   else

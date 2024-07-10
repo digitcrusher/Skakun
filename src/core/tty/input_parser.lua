@@ -14,6 +14,9 @@
 -- You should have received a copy of the GNU General Public License
 -- along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+local here = ...
+local stderr = require('core.stderr')
+
 local InputParser = {
   dispatch_list = {
     'take_mouse',
@@ -335,6 +338,7 @@ function InputParser:take_mouse(buf, offset)
     [129] = 'mouse_next',
   })[bits & ~28]
   if not button then
+    stderr.warn(here, 'unknown mouse button: ', bits & ~28)
     return {}, new_offset
   end
 
@@ -405,6 +409,7 @@ function InputParser:take_kitty_key(buf, offset)
       text = codepoint and utf8.char(codepoint),
     }}, new_offset
   elseif codepoint then
+    stderr.warn(here, 'unknown kitty keycode: ',  keycode)
     return {{ type = 'paste', text = utf8.char(codepoint) }}, new_offset
   else
     return {}, new_offset

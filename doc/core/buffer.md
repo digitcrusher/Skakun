@@ -56,9 +56,9 @@ Deletes a range from the buffer in `O(log #buffer)`.
 
     buffer:copy(offset, src, start, end)
 
-Copies and inserts a slice from another buffer in `O(log #buffer + #src)`. The
-same cost applies to memory but that is cached whenever the state of the source
-buffer and the slice stay the same.
+Copies and inserts a slice from another buffer in `O(log #buffer + log #src)`.
+A `O(log #src)` cost applies to memory but that is cached whenever the state of
+the source buffer and the slice stay the same.
 
     Buffer.clear_copy_cache()
 
@@ -100,7 +100,7 @@ Loads all healthy (non-corrupt) mmaps in a buffer immediately from disk in
 
 Checks whether a buffer contains any healthy/corrupt mmaps.
 
-    were_mmaps_corrupted = Buffer.check_fs_events()
+    were_mmaps_corrupted = Buffer.validate_mmaps()
 
 Checks the filesystem for any changes made to memory-mapped files and updates
 all buffers accordingly in `O(#buffer)`.

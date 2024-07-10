@@ -34,7 +34,7 @@ Writes a series of strings to the terminal with full buffering.
 
 Flushes the buffered write data and immediately sends it to the terminal.
 
-    tty.read()
+    string = tty.read()
 
 Reads all pending bytes from the terminal.
 
@@ -56,7 +56,7 @@ extensions, such as `Ss`.
 Returns a boolean signalling the presence of a terminal flag capability in its
 terminfo entry, or `nil` if the capname is unrecognized.
 
-    num = tty.getnum(capname, [term])
+    int = tty.getnum(capname, [term])
 
 Gets the numeric capability, or `false` if it's absent from the terminal's
 terminfo entry, or `nil` if the capname is unrecognized.

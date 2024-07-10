@@ -2,13 +2,13 @@
 
     core = require('core')
 
-This namespace is wholly populated by the bootstrap program.
+This namespace is wholly populated by the bootstrap program and is available to
+C modules.
 
     core.add_cleanup(func)
 
 Registers a function to be called at program failure or normal exit. The call
-order is opposite to the order of registration. The function may be called more
-than once, so subsequent calls should probably be no-ops.
+order is opposite to the order of registration.
 
     core.platform
 

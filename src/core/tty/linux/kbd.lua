@@ -14,6 +14,8 @@
 -- You should have received a copy of the GNU General Public License
 -- along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+local here = ...
+local stderr = require('core.stderr')
 local system = require('core.tty.linux.system')
 local K, KG, KT = system.K, system.KG, system.KT
 
@@ -66,13 +68,19 @@ function Kbd:feed(string)
       ctrl = state & 1 << KG.CTRL ~= 0,
       shift = state & 1 << KG.SHIFT ~= 0,
     }
-    local ok, text = pcall(self.handle_keycode, self, keycode, is_release, type == 'repeat')
+    local ok, text = pcall(self.handle_keycode, self, keycode, is_release, event.type == 'repeat')
     if ok then
       event.text = text
+    else
+      stderr.error(here, 'keycode handler failed:\n', debug.traceback(text))
     end
     self.is_pressed[keycode] = not is_release
 
-    result[#result + 1] = event
+    if event.button then
+      result[#result + 1] = event
+    else
+      stderr.warn(here, 'unknown keycode: ', keycode)
+    end
   end
   self.buf = self.buf:sub(i)
 
@@ -171,6 +179,9 @@ function Kbd:handle_action(action, is_release, is_repeat)
 
     elseif action == K.INCRCONSOLE then
       system.set_active_vc(system.get_active_vc() + 1)
+
+    else
+      stderr.warn(here, 'unhandled special key action: ', action)
     end
 
   elseif action >> 8 == KT.PAD then
@@ -327,6 +338,9 @@ function Kbd:handle_action(action, is_release, is_repeat)
     local result = utf8.char(self.active_accent)
     self.active_accent = action & 0xff
     return result
+
+  else
+    stderr.warn(here, 'unhandled key action: ', action)
   end
 end
 

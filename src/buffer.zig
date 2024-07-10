@@ -784,7 +784,7 @@ pub const Editor = struct {
     }
   }
 
-  pub fn check_fs_events(self: *Editor) bool {
+  pub fn validate_mmaps(self: *Editor) bool {
     self.were_mmaps_corrupted = false;
     _ = gio.g_main_context_iteration(self.gio_async_ctx, 0);
     return self.were_mmaps_corrupted;
