@@ -24,7 +24,11 @@ var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator = gpa.allocator(); // This would reference a stack variable, were it in main.
 var vm: *lua.Lua = undefined;
 
-fn cleanup() callconv(.C) void {
+fn cleanup_gpa() callconv(.C) void {
+  _ = gpa.deinit();
+}
+
+fn cleanup_vm() callconv(.C) void {
   // The initial comments in doString's improve stack trace legibility.
   vm.doString(
     \\-- cleanup() in main.zig
@@ -47,10 +51,13 @@ fn cleanup() callconv(.C) void {
     \\end
   ) catch unreachable;
   vm.deinit();
-  _ = gpa.deinit();
 }
 
 pub fn main() !void {
+  // This must be the final cleanup task done, since all the previous ones may
+  // still need to use the allocator, for example to deallocate memory.
+  std.debug.assert(c.atexit(cleanup_gpa) == 0);
+
   vm = try lua.Lua.init(&allocator);
   vm.openLibs();
 
@@ -140,7 +147,6 @@ pub fn main() !void {
     \\  end
     \\)
   );
-  std.debug.assert(c.atexit(cleanup) == 0);
 
   vm.requireF("core.buffer", lua.wrap(@import("core/buffer.zig").luaopen), false);
   vm.requireF("core.stderr", lua.wrap(@import("core/stderr.zig").luaopen), false);
@@ -152,6 +158,9 @@ pub fn main() !void {
   } else if(target.isBSD()) {
     vm.requireF("core.tty.freebsd.system", lua.wrap(@import("core/tty/freebsd/system.zig").luaopen), false);
   }
+
+  // We let Zig modules do their cleanup after Lua's turn.
+  std.debug.assert(c.atexit(cleanup_vm) == 0);
 
   try vm.doString(
     \\-- main() in main.zig

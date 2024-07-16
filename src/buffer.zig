@@ -19,6 +19,7 @@ const gio = @cImport({
   @cInclude("gio/gio.h");
   @cInclude("gio/gunixoutputstream.h");
 });
+const grapheme = @cImport(@cInclude("grapheme.h"));
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const posix = std.posix;
@@ -27,7 +28,7 @@ const posix = std.posix;
 // set to an error message from GIO. The caller is reponsible for freeing
 // err_msg with the Editor's allocator afterwards.
 
-pub const Error = Allocator.Error || error {BufferFrozen, OutOfBounds, MultipleHardLinks} || GioError || posix.OpenError || posix.ReadError || posix.MMapError || posix.RealPathError || posix.RenameError;
+pub const Error = Allocator.Error || error {OutOfBounds, MultipleHardLinks} || GioError || posix.OpenError || posix.ReadError || posix.MMapError || posix.RealPathError || posix.RenameError;
 
 const Fragment = struct {
   const Owner = enum {
@@ -55,7 +56,7 @@ const Fragment = struct {
     return self;
   }
 
-  fn create_mmap(editor: *Editor, data: []u8, st_dev: posix.dev_t, st_ino: posix.ino_t, path: [*:0]const u8, err_msg: ?*?[:0]u8) GioError!*Fragment {
+  fn create_mmap(editor: *Editor, data: []u8, st_dev: posix.dev_t, st_ino: posix.ino_t, path: [*:0]const u8, err_msg: ?*?[]u8) GioError!*Fragment {
     const self = try editor.allocator.create(Fragment);
     errdefer editor.allocator.destroy(self);
     self.* = .{
@@ -166,24 +167,30 @@ const Fragment = struct {
 };
 
 const Node = struct {
-  const Stats = struct {
-    bytes: usize,
-    has_healthy_mmap: bool,
-    has_corrupt_mmap: bool,
-  };
-
   refc: i32 = 0,
   is_frozen: bool = false,
   frag: struct {
     ptr: *Fragment,
     start: usize,
     end: usize,
+
+    fn slice(self: @This()) []u8 {
+      return self.ptr.data[self.start .. self.end];
+    }
+
+    fn len(self: @This()) usize {
+      return self.end - self.start;
+    }
   },
 
   priority: u32,
   left: ?*Node = null,
   right: ?*Node = null,
-  stats: Stats,
+  stats: struct {
+    bytes: usize,
+    has_healthy_mmap: bool,
+    has_corrupt_mmap: bool,
+  },
 
   fn create(editor: *Editor, frag: *Fragment, start: usize, end: usize) Allocator.Error!*Node {
     assert(start < end and end <= frag.data.len);
@@ -329,7 +336,7 @@ const Node = struct {
       }
     }
 
-    const data = self.frag.ptr.data[self.frag.start .. self.frag.end];
+    const data = self.frag.slice();
     if(offset < data.len) {
       const data_slice = data[offset .. @min(offset + dest.len - readc, data.len)];
       std.mem.copyForwards(u8, dest[readc ..], data_slice);
@@ -346,12 +353,12 @@ const Node = struct {
     return readc;
   }
 
-  fn save(self: *Node, editor: *Editor, output: *gio.GOutputStream, err_msg: ?*?[:0]u8) GioError!void {
+  fn save(self: *Node, editor: *Editor, output: *gio.GOutputStream, err_msg: ?*?[]u8) GioError!void {
     if(self.left) |x| {
       try x.save(editor, output, err_msg);
     }
 
-    const data = self.frag.ptr.data[self.frag.start .. self.frag.end];
+    const data = self.frag.slice();
     var err: ?*gio.GError = null;
     if(gio.g_output_stream_write_all(output, data.ptr, data.len, null, null, &err) == 0) return handle_gio_error(err.?, editor.allocator, err_msg);
 
@@ -378,7 +385,7 @@ const Node = struct {
 
   // We do this reference juggling so that a cleanly split off child doesn't get
   // garbage collected when unlinked from the parent.
-  fn split_ref(self: *Node, editor: *Editor, offset_: usize) error {OutOfBounds, OutOfMemory}!struct {?*Node, ?*Node} {
+  fn split_ref(self: *Node, editor: *Editor, offset_: usize) (Allocator.Error || error {OutOfBounds})!struct {?*Node, ?*Node} {
     var offset = offset_;
     if(offset == 0) {
       return .{null, self.ref()};
@@ -427,7 +434,6 @@ const Node = struct {
 pub const Buffer = struct {
   editor: *Editor,
   root: ?*Node,
-  is_frozen: bool = false,
 
   pub fn create(editor: *Editor, root: ?*Node) Allocator.Error!*Buffer {
     const self = try editor.allocator.create(Buffer);
@@ -446,17 +452,6 @@ pub const Buffer = struct {
     }
     _ = self.editor.buffers.swapRemove(std.mem.indexOfScalar(*Buffer, self.editor.buffers.items, self).?);
     self.editor.allocator.destroy(self);
-  }
-
-  pub fn freeze(self: *Buffer) void {
-    self.is_frozen = true;
-    if(self.root) |x| {
-      x.is_frozen = true;
-    }
-  }
-
-  pub fn thaw(self: *Buffer) Allocator.Error!*Buffer {
-    return if(self.is_frozen) Buffer.create(self.editor, self.root) else self;
   }
 
   pub fn load(self: *Buffer) Allocator.Error!void {
@@ -487,13 +482,219 @@ pub const Buffer = struct {
     }
   }
 
-  pub fn save(self: *Buffer, path: []const u8, err_msg: ?*?[:0]u8) (GioError || posix.OpenError || posix.RealPathError || posix.RenameError || error {MultipleHardLinks})!void {
+  pub fn iter(self: *Buffer, offset_: usize) error {OutOfBounds}!Iterator {
+    var offset = offset_;
+    if(offset > self.len()) return error.OutOfBounds;
+
+    var result = Iterator{ .buffer = self };
+    if(self.root == null) return result;
+    result.descend(self.root.?);
+
+    while(true) {
+      const node = result.node();
+
+      if(node.left) |x| {
+        if(offset < x.stats.bytes) {
+          result.descend(x);
+          continue;
+        } else {
+          offset -= x.stats.bytes;
+        }
+      }
+
+      if(offset < node.frag.len()) {
+        result.offset_in_node = offset;
+        break;
+      } else {
+        offset -= node.frag.len();
+      }
+
+      if(node.right) |x| {
+        result.descend(x);
+      } else break; // offset_ == self.len()
+    }
+
+    return result;
+  }
+
+  pub const Iterator = struct {
+    buffer: *Buffer,
+    // With the high-end amount of RAM in today's computers, we can only store
+    // at most two billion nodes. In a perfectly balanced binary tree that would
+    // result in a height of around 31 - double that should be enough to account
+    // for the unbalancedness of a treap.
+    path: std.BoundedArray(*Node, 64) = std.BoundedArray(*Node, 64).init(0) catch unreachable,
+    offset_in_node: usize = 0,
+    last_advance: usize = 0,
+
+    pub fn deinit(self: *Iterator) void {
+      while(self.path.len > 0) {
+        _ = self.ascend();
+      }
+    }
+
+    fn node(self: *Iterator) *Node {
+      return self.path.get(self.path.len - 1);
+    }
+
+    fn descend(self: *Iterator, into: *Node) void {
+      self.path.append(into.ref()) catch unreachable;
+    }
+
+    fn ascend(self: *Iterator) *Node {
+      const result = self.path.pop();
+      result.unref(self.buffer.editor);
+      return result;
+    }
+
+    fn next_node(self: *Iterator) error {OutOfBounds}!void {
+      if(self.path.len <= 0) {
+        if(self.offset_in_node > 0 or self.buffer.root == null) {
+          return error.OutOfBounds;
+        }
+        self.descend(self.buffer.root.?);
+        while(self.node().left) |x| {
+          self.descend(x);
+        }
+
+      } else if(self.node().right) |x| {
+        self.descend(x);
+        while(self.node().left) |y| {
+          self.descend(y);
+        }
+
+      } else while(true) {
+        const child = self.ascend();
+        if(self.path.len <= 0) {
+          self.offset_in_node = std.math.maxInt(@TypeOf(self.offset_in_node));
+          return error.OutOfBounds;
+        }
+        const parent = self.node();
+        if(child != parent.right) break;
+      }
+
+      self.offset_in_node = 0;
+    }
+
+    fn prev_node(self: *Iterator) error {OutOfBounds}!void {
+      if(self.path.len <= 0) {
+        if(self.offset_in_node <= 0 or self.buffer.root == null) {
+          return error.OutOfBounds;
+        }
+        self.descend(self.buffer.root.?);
+        while(self.node().right) |x| {
+          self.descend(x);
+        }
+
+      } else if(self.node().left) |x| {
+        self.descend(x);
+        while(self.node().right) |y| {
+          self.descend(y);
+        }
+
+      } else while(true) {
+        const child = self.ascend();
+        if(self.path.len <= 0) {
+          self.offset_in_node = 0;
+          return error.OutOfBounds;
+        }
+        const parent = self.node();
+        if(child != parent.left) break;
+      }
+
+      self.offset_in_node = self.node().frag.len();
+    }
+
+    pub fn next(self: *Iterator) ?u8 {
+      if(self.path.len <= 0 or self.offset_in_node >= self.node().frag.len()) {
+        self.next_node() catch return null;
+      }
+      defer self.offset_in_node += 1;
+      return self.node().frag.slice()[self.offset_in_node];
+    }
+
+    pub fn prev(self: *Iterator) ?u8 {
+      if(self.path.len <= 0 or self.offset_in_node <= 0) {
+        self.prev_node() catch return null;
+      }
+      self.offset_in_node -= 1;
+      return self.node().frag.slice()[self.offset_in_node];
+    }
+
+    pub fn rewind(self: *Iterator, count_: usize) error {OutOfBounds}!void {
+      var count = count_;
+      if(self.path.len <= 0) {
+        try self.prev_node();
+      }
+      while(count > 0) {
+        if(self.offset_in_node <= 0) {
+          try self.prev_node();
+        }
+        const subtrahend = @min(count, self.offset_in_node);
+        count -= subtrahend;
+        self.offset_in_node -= subtrahend;
+      }
+    }
+
+    // Consumes overlong encodings and surrogate halves in whole - in clear
+    // defiance of Subsection "U+FFFD Substitution of Maximal Subparts",
+    // Chapter 3.
+    pub fn next_codepoint(self: *Iterator) error {InvalidUtf8}!?u21 {
+      var buf: [4]u8 = undefined;
+      if(self.next()) |start| {
+        buf[0] = start;
+        self.last_advance = 1;
+      } else return null;
+
+      const bytec = std.unicode.utf8ByteSequenceLength(buf[0]) catch return error.InvalidUtf8;
+      for(1 .. bytec) |i| {
+        buf[i] = self.next() orelse return error.InvalidUtf8;
+        if(buf[i] & 0b1100_0000 == 0b1000_0000) {
+          self.last_advance += 1;
+        } else {
+          self.rewind(1) catch unreachable;
+          return error.InvalidUtf8;
+        }
+      }
+
+      return std.unicode.utf8Decode(buf[0 .. bytec]) catch error.InvalidUtf8;
+    }
+
+    // Writing the result into a fixed-size buffer is inherently unsafe
+    // because grapheme clusters can be arbitrarily long - see "Zalgo text".
+    // Stops at a grapheme cluster break, or before the first UTF-8 error.
+    pub fn next_grapheme(self: *Iterator, dest: *std.ArrayList(u21)) (Allocator.Error || error {InvalidUtf8})!?[]u21 {
+      const start = dest.items.len;
+
+      try dest.append(try self.next_codepoint() orelse return null);
+      var last_advance = self.last_advance;
+      defer self.last_advance = last_advance;
+
+      var state: u16 = 0;
+      while(true) {
+        const lookahead = self.next_codepoint() catch {
+          self.rewind(self.last_advance) catch unreachable;
+          break;
+        } orelse break;
+        if(grapheme.grapheme_is_character_break(dest.getLast(), lookahead, &state)) {
+          self.rewind(self.last_advance) catch unreachable;
+          break;
+        }
+        try dest.append(lookahead);
+        last_advance += self.last_advance;
+      }
+
+      return dest.items[start ..];
+    }
+  };
+
+  pub fn save(self: *Buffer, path: []const u8, err_msg: ?*?[]u8) (GioError || posix.OpenError || posix.RealPathError || posix.RenameError || error {MultipleHardLinks})!void {
     const path_z = try self.editor.allocator.dupeZ(u8, path);
     defer self.editor.allocator.free(path_z);
     return self.save_z(path_z, err_msg);
   }
 
-  pub fn save_z(self: *Buffer, path: [*:0]const u8, err_msg: ?*?[:0]u8) (GioError || posix.OpenError || posix.RealPathError || posix.RenameError || error {MultipleHardLinks})!void {
+  pub fn save_z(self: *Buffer, path: [*:0]const u8, err_msg: ?*?[]u8) (GioError || posix.OpenError || posix.RealPathError || posix.RenameError || error {MultipleHardLinks})!void {
     var err: ?*gio.GError = null;
 
     var output: *gio.GOutputStream = undefined;
@@ -580,8 +781,7 @@ pub const Buffer = struct {
     if(gio.g_output_stream_close(output, null, &err) == 0) return handle_gio_error(err.?, self.editor.allocator, err_msg);
   }
 
-  pub fn insert(self: *Buffer, offset: usize, data: []const u8) (Allocator.Error || error {BufferFrozen, OutOfBounds})!void {
-    if(self.is_frozen) return error.BufferFrozen;
+  pub fn insert(self: *Buffer, offset: usize, data: []const u8) (Allocator.Error || error {OutOfBounds})!void {
     if(data.len <= 0) return;
 
     const copied_data = try self.editor.allocator.dupe(u8, data);
@@ -608,8 +808,7 @@ pub const Buffer = struct {
     }
   }
 
-  pub fn delete(self: *Buffer, start: usize, end: usize) (Allocator.Error || error {BufferFrozen, OutOfBounds})!void {
-    if(self.is_frozen) return error.BufferFrozen;
+  pub fn delete(self: *Buffer, start: usize, end: usize) (Allocator.Error || error {OutOfBounds})!void {
     if(start >= end) return;
     if(self.root == null) return error.OutOfBounds;
 
@@ -632,9 +831,8 @@ pub const Buffer = struct {
     }
   }
 
-  pub fn copy(self: *Buffer, offset: usize, src: *Buffer, start: usize, end: usize) (Allocator.Error || error {BufferFrozen, OutOfBounds})!void {
+  pub fn copy(self: *Buffer, offset: usize, src: *Buffer, start: usize, end: usize) (Allocator.Error || error {OutOfBounds})!void {
     assert(self.editor == src.editor);
-    if(self.is_frozen) return error.BufferFrozen;
     if(start >= end) return;
     if(src.root == null) return error.OutOfBounds;
 
@@ -713,6 +911,9 @@ pub const Editor = struct {
 
   pub fn deinit(self: *Editor) void {
     self.mmaps.deinit();
+    for(self.buffers.items) |x| {
+      x.destroy();
+    }
     self.buffers.deinit();
     for(self.moved_mmapped_files.items) |file| {
       // Multiple fragments can refer to the same file, just how there can be
@@ -735,13 +936,13 @@ pub const Editor = struct {
     self.copy_cache.clearAndFree();
   }
 
-  pub fn open(self: *Editor, path: []const u8, err_msg: ?*?[:0]u8) (GioError || posix.OpenError || posix.ReadError || posix.MMapError)!*Buffer {
+  pub fn open(self: *Editor, path: []const u8, err_msg: ?*?[]u8) (GioError || posix.OpenError || posix.ReadError || posix.MMapError)!*Buffer {
     const path_z = try self.allocator.dupeZ(u8, path);
     defer self.allocator.free(path_z);
     return self.open_z(path_z, err_msg);
   }
 
-  pub fn open_z(self: *Editor, path: [*:0]const u8, err_msg: ?*?[:0]u8) (GioError || posix.OpenError || posix.ReadError || posix.MMapError)!*Buffer {
+  pub fn open_z(self: *Editor, path: [*:0]const u8, err_msg: ?*?[]u8) (GioError || posix.OpenError || posix.ReadError || posix.MMapError)!*Buffer {
     var err: ?*gio.GError = null;
 
     var frag: *Fragment = undefined;
@@ -822,10 +1023,10 @@ pub const GioError = error {
 // POSIX errors, so to obtain this mapping I just had to search for the Glib
 // error in its source code and then search for the corresponding POSIX error
 // in std.posix's source code.
-fn handle_gio_error(err: *gio.GError, allocator: Allocator, msg: ?*?[:0]u8) GioError {
+fn handle_gio_error(err: *gio.GError, allocator: Allocator, msg: ?*?[]u8) GioError {
   defer gio.g_error_free(err);
   if(msg) |x| {
-    x.* = allocator.dupeZ(u8, std.mem.span(err.message)) catch null;
+    x.* = allocator.dupe(u8, std.mem.span(err.message)) catch null;
   }
   // Normally, in C code, one would use G_DBUS_ERROR, G_IO_ERROR,
   // G_RESOLVER_ERROR and G_TLS_ERROR here, but Zig is different and we are

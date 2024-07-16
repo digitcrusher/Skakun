@@ -105,4 +105,20 @@ function utils.base64_decode(base64)
   return string
 end
 
+function utils.rgb(string)
+  return {
+    red   = tonumber(string:sub(1, 2), 16),
+    green = tonumber(string:sub(3, 4), 16),
+    blue  = tonumber(string:sub(5, 6), 16),
+  }
+end
+
+function utils.unpack_color(color)
+  if type(color) == 'table' then
+    return color.red, color.green, color.blue
+  else
+    return color
+  end
+end
+
 return utils

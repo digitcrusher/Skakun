@@ -64,21 +64,6 @@ the source buffer and the slice stay the same.
 
 Clears the aforementioned cache.
 
-## Freezing
-
-    buffer:freeze()
-
-Marks a buffer and its contents as read-only causing any future edit operations
-to fail.
-
-    bool = buffer:is_frozen()
-
-Checks whether a buffer is frozen.
-
-    self_or_copy = buffer:thaw()
-
-Returns self or, if the buffer is frozen, an unfrozen writable copy of it.
-
 ## Mmaps
 
 Mmaps, in all their glory, are not without their downsides. The fact that we
@@ -103,4 +88,4 @@ Checks whether a buffer contains any healthy/corrupt mmaps.
     were_mmaps_corrupted = Buffer.validate_mmaps()
 
 Checks the filesystem for any changes made to memory-mapped files and updates
-all buffers accordingly in `O(#buffer)`.
+all buffers accordingly in `O(#buffer for every existing buffer)`.

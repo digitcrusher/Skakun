@@ -9,7 +9,8 @@ various libraries such as termios and terminfo.
 
     tty.open()
 
-Opens the terminal pseudofile(s) (`/dev/tty` or `CONIN$`/`CONOUT$`) for reading and writing.
+Opens the terminal pseudofile(s) (`/dev/tty` or `CONIN$`/`CONOUT$`) for reading
+and writing.
 
     tty.close()
 
@@ -17,8 +18,8 @@ Closes it/them.
 
     tty.enable_raw_mode()
 
-Enables raw mode using `cfmakeraw` and makes `read` non-blocking. Explanation of
-raw mode: https://en.wikipedia.org/wiki/Terminal_mode
+Enables raw mode using `cfmakeraw` and makes `tty.read` non-blocking.
+Explanation of raw mode: https://en.wikipedia.org/wiki/Terminal_mode
 
     tty.disable_raw_mode()
 
@@ -37,6 +38,15 @@ Flushes the buffered write data and immediately sends it to the terminal.
     string = tty.read()
 
 Reads all pending bytes from the terminal.
+
+    width, height = tty.get_size()
+
+Gets the size of the terminal's screen in cells.
+
+    width = tty.width_of(text)
+
+Calculates by how many cells a terminal's cursor would move if the given string
+were printed out.
 
 ## Terminfo
 

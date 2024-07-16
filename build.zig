@@ -3,7 +3,6 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
   const target = b.standardTargetOptions(.{});
   const optimize = b.standardOptimizeOption(.{});
-  b.lib_dir = "zig-out/lib/skakun";
 
   const exe = b.addExecutable(.{
     .name = "skak",
@@ -12,13 +11,28 @@ pub fn build(b: *std.Build) void {
     .optimize = optimize,
   });
   exe.root_module.addImport("ziglua", b.dependency("ziglua", .{
-    .lang = .lua54,
     .target = target,
     .optimize = optimize,
   }).module("ziglua"));
   exe.linkLibC();
   exe.linkSystemLibrary(if(target.result.os.tag == .linux) "gio-unix-2.0" else "gio-2.0");
   exe.linkSystemLibrary("tinfo");
+
+  const libgrapheme = b.dependency("libgrapheme", .{
+    .target = target,
+    .optimize = optimize,
+  });
+  std.fs.accessAbsolute(libgrapheme.path("libgrapheme.a").getPath(b), .{}) catch {
+    const configure = b.addSystemCommand(&.{"./configure"});
+    configure.setCwd(libgrapheme.path(""));
+    const make = b.addSystemCommand(&.{"make"});
+    make.setCwd(libgrapheme.path(""));
+    make.step.dependOn(&configure.step);
+    exe.step.dependOn(&make.step);
+  };
+  exe.addLibraryPath(libgrapheme.path(""));
+  exe.linkSystemLibrary("grapheme");
+  exe.addIncludePath(libgrapheme.path(""));
 
   var version: []const u8 = undefined;
   if(b.option([]const u8, "version", "Application version string")) |x| {
@@ -46,6 +60,7 @@ pub fn build(b: *std.Build) void {
   exe.root_module.addOptions("build", options);
 
   b.installArtifact(exe);
+  b.lib_dir = "zig-out/lib/skakun";
   b.installDirectory(.{
     .source_dir = b.path("src"),
     .install_dir = .lib,

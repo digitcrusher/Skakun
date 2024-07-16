@@ -489,6 +489,7 @@ function tty.getstr(capname, term)
   end
 end
 
+-- Reference: https://gist.github.com/christianparpart/d8a62cc1ab659194337d73e399004036
 function tty.sync_begin()
   tty.write('\27[?2026h')
 end

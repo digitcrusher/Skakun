@@ -17,7 +17,13 @@
 const std = @import("std");
 const target = @import("builtin").target;
 const lua = @import("ziglua");
-const c = @cImport(@cInclude("termios.h"));
+const c = @cImport({
+  @cInclude("string.h");
+  @cInclude("sys/ioctl.h");
+  @cInclude("termios.h");
+  @cDefine("_XOPEN_SOURCE", {});
+  @cInclude("wchar.h");
+});
 const curses = @cImport({
   @cInclude("curses.h");
   @cInclude("term.h");
@@ -116,29 +122,6 @@ fn close(_: *lua.Lua) i32 {
   return 0;
 }
 
-fn write(vm: *lua.Lua) i32  {
-  if(!is_open) vm.raiseErrorStr("tty is closed", .{});
-  for(1 .. @intCast(vm.getTop() + 1)) |arg_idx| {
-    writer.writer().writeAll(vm.checkString(@intCast(arg_idx))) catch |err| vm.raiseErrorStr("%s", .{@errorName(err).ptr});
-  }
-  return 0;
-}
-
-fn flush(vm: *lua.Lua) i32  {
-  if(!is_open) vm.raiseErrorStr("tty is closed", .{});
-  writer.flush() catch |err| vm.raiseErrorStr("%s", .{@errorName(err).ptr});
-  return 0;
-}
-
-fn read(vm: *lua.Lua) i32  {
-  if(!is_open) vm.raiseErrorStr("tty is closed", .{});
-  const allocator = vm.allocator();
-  const data = reader.readAllAlloc(allocator, 1_000_000) catch |err| vm.raiseErrorStr("%s", .{@errorName(err).ptr}); // An arbitrary limit of 1MB
-  defer allocator.free(data);
-  _ = vm.pushString(data);
-  return 1;
-}
-
 var original_termios: ?posix.termios = null;
 
 fn enable_raw_mode(vm: *lua.Lua) i32  {
@@ -166,6 +149,55 @@ fn disable_raw_mode(vm: *lua.Lua) i32  {
     original_termios = null;
   }
   return 0;
+}
+
+fn write(vm: *lua.Lua) i32  {
+  if(!is_open) vm.raiseErrorStr("tty is closed", .{});
+  for(1 .. @intCast(vm.getTop() + 1)) |arg_idx| {
+    writer.writer().writeAll(vm.checkString(@intCast(arg_idx))) catch |err| vm.raiseErrorStr("%s", .{@errorName(err).ptr});
+  }
+  return 0;
+}
+
+fn flush(vm: *lua.Lua) i32  {
+  if(!is_open) vm.raiseErrorStr("tty is closed", .{});
+  writer.flush() catch |err| vm.raiseErrorStr("%s", .{@errorName(err).ptr});
+  return 0;
+}
+
+fn read(vm: *lua.Lua) i32  {
+  if(!is_open) vm.raiseErrorStr("tty is closed", .{});
+  const allocator = vm.allocator();
+  const data = reader.readAllAlloc(allocator, 1_000_000) catch |err| vm.raiseErrorStr("%s", .{@errorName(err).ptr}); // An arbitrary limit of 1MB
+  defer allocator.free(data);
+  _ = vm.pushString(data);
+  return 1;
+}
+
+fn get_size(vm: *lua.Lua) i32 {
+  if(!is_open) vm.raiseErrorStr("tty is closed", .{});
+  var result: c.winsize = undefined;
+  if(std.c.ioctl(if(target.os.tag == .windows) file.out.handle else file.handle, c.TIOCGWINSZ, &result) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+  vm.pushInteger(result.ws_col);
+  vm.pushInteger(result.ws_row);
+  return 2;
+}
+
+fn width_of(vm: *lua.Lua) i32 {
+  var result: usize = 0;
+  var iter = (std.unicode.Utf8View.init(vm.checkString(1)) catch vm.raiseErrorStr("invalid UTF-8 code", .{})).iterator();
+  // Open sesame! (This was tricky to find.)
+  _ = std.c.setlocale(std.c.LC.CTYPE, "");
+  while(iter.nextCodepoint()) |x| {
+    const addend = c.wcwidth(x);
+    if(addend < 0) {
+      result += 1;
+    } else {
+      result += @intCast(addend);
+    }
+  }
+  vm.pushInteger(@intCast(result));
+  return 1;
 }
 
 fn getflag(vm: *lua.Lua) i32  {
@@ -229,11 +261,15 @@ fn getstr(vm: *lua.Lua) i32 {
 const funcs = [_]lua.FnReg{
   .{ .name = "open", .func = lua.wrap(open) },
   .{ .name = "close", .func = lua.wrap(close) },
+  .{ .name = "enable_raw_mode", .func = lua.wrap(enable_raw_mode) },
+  .{ .name = "disable_raw_mode", .func = lua.wrap(disable_raw_mode) },
+
   .{ .name = "write", .func = lua.wrap(write) },
   .{ .name = "flush", .func = lua.wrap(flush) },
   .{ .name = "read", .func = lua.wrap(read) },
-  .{ .name = "enable_raw_mode", .func = lua.wrap(enable_raw_mode) },
-  .{ .name = "disable_raw_mode", .func = lua.wrap(disable_raw_mode) },
+  .{ .name = "get_size", .func = lua.wrap(get_size) },
+  .{ .name = "width_of", .func = lua.wrap(width_of) },
+
   .{ .name = "getflag", .func = lua.wrap(getflag) },
   .{ .name = "getnum", .func = lua.wrap(getnum) },
   .{ .name = "getstr", .func = lua.wrap(getstr) },
