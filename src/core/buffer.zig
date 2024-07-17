@@ -129,59 +129,59 @@ fn __len(vm: *lua.Lua) i32 {
 
 fn read(vm: *lua.Lua) i32 {
   const self = vm.checkUserdata(*Buffer, 1, "core.buffer").*;
-  const start = vm.checkInteger(2);
-  const end = vm.checkInteger(3);
-  if(start >= end) {
+  const from = vm.checkInteger(2);
+  const to = vm.checkInteger(3);
+  if(from > to) {
     _ = vm.pushString("");
     return 1;
   }
-  if(end > self.len()) {
+  if(to > self.len()) {
     raise_err(vm, error.OutOfBounds, null);
   }
   var result: lua.Buffer = undefined;
-  const readc = self.read(@intCast(start), result.initSize(vm, @intCast(end - start))) catch |err| raise_err(vm, err, null);
-  std.debug.assert(readc == end - start);
+  const readc = self.read(@intCast(from - 1), result.initSize(vm, @intCast(to - from + 1))) catch |err| raise_err(vm, err, null);
+  std.debug.assert(readc == to - from + 1);
   result.pushResultSize(readc);
+  return 1;
+}
+
+fn iter(vm: *lua.Lua) i32 {
+  const self = vm.checkUserdata(*Buffer, 1, "core.buffer").*;
+  const from = vm.optInteger(2) orelse 1;
+  vm.newUserdata(Buffer.Iterator, 0).* = self.iter(@intCast(from - 1)) catch |err| raise_err(vm, err, null);
+  vm.setMetatableRegistry("core.buffer.iter");
   return 1;
 }
 
 fn insert(vm: *lua.Lua) i32 {
   const self = vm.checkUserdata(*Buffer, 1, "core.buffer").*;
-  const offset = vm.checkInteger(2);
+  const idx = vm.checkInteger(2);
   const data = vm.checkString(3);
-  self.insert(@intCast(offset), data) catch |err| raise_err(vm, err, null);
+  self.insert(@intCast(idx - 1), data) catch |err| raise_err(vm, err, null);
   return 0;
 }
 
 fn delete(vm: *lua.Lua) i32 {
   const self = vm.checkUserdata(*Buffer, 1, "core.buffer").*;
-  const start = vm.checkInteger(2);
-  const end = vm.checkInteger(3);
-  self.delete(@intCast(start), @intCast(end)) catch |err| raise_err(vm, err, null);
+  const from = vm.checkInteger(2);
+  const to = vm.checkInteger(3);
+  self.delete(@intCast(from - 1), @intCast(to)) catch |err| raise_err(vm, err, null);
   return 0;
 }
 
 fn copy(vm: *lua.Lua) i32 {
   const self = vm.checkUserdata(*Buffer, 1, "core.buffer").*;
-  const offset = vm.checkInteger(2);
+  const idx = vm.checkInteger(2);
   const src = vm.checkUserdata(*Buffer, 3, "core.buffer").*;
-  const start = vm.checkInteger(4);
-  const end = vm.checkInteger(5);
-  self.copy(@intCast(offset), src, @intCast(start), @intCast(end)) catch |err| raise_err(vm, err, null);
+  const from = vm.checkInteger(4);
+  const to = vm.checkInteger(5);
+  self.copy(@intCast(idx - 1), src, @intCast(from - 1), @intCast(to)) catch |err| raise_err(vm, err, null);
   return 0;
 }
 
 fn clear_copy_cache(_: *lua.Lua) i32 {
   editor.clear_copy_cache();
   return 0;
-}
-
-fn iter(vm: *lua.Lua) i32 {
-  const self = vm.checkUserdata(*Buffer, 1, "core.buffer").*;
-  const offset = vm.checkInteger(2);
-  vm.newUserdata(Buffer.Iterator, 0).* = self.iter(@intCast(offset)) catch |err| raise_err(vm, err, null);
-  vm.setMetatableRegistry("core.buffer.iter");
-  return 1;
 }
 
 fn load(vm: *lua.Lua) i32 {
@@ -210,12 +210,12 @@ const buffer_methods = [_]lua.FnReg{
   .{ .name = "save", .func = lua.wrap(save) },
 
   .{ .name = "read", .func = lua.wrap(read) },
+  .{ .name = "iter", .func = lua.wrap(iter) },
+
   .{ .name = "insert", .func = lua.wrap(insert) },
   .{ .name = "delete", .func = lua.wrap(delete) },
   .{ .name = "copy", .func = lua.wrap(copy) },
   .{ .name = "clear_copy_cache", .func = lua.wrap(clear_copy_cache) },
-
-  .{ .name = "iter", .func = lua.wrap(iter) },
 
   .{ .name = "load", .func = lua.wrap(load) },
   .{ .name = "has_healthy_mmap", .func = lua.wrap(has_healthy_mmap) },
@@ -258,14 +258,23 @@ fn next_grapheme(vm: *lua.Lua) i32 {
 
   var dest = std.ArrayList(u21).init(vm.allocator());
   defer dest.deinit();
-  const maybe_grapheme = self.next_grapheme(&dest) catch |err| raise_err(vm, err, null);
+  const maybe_grapheme = self.next_grapheme(&dest) catch |err| {
+    dest.deinit();
+    raise_err(vm, err, null);
+  };
 
   if(maybe_grapheme) |grapheme| {
-    vm.createTable(@intCast(grapheme.len), 0);
-    for(grapheme, 1 ..) |codepoint, i| {
-      vm.pushInteger(codepoint);
-      vm.setIndex(-2, @intCast(i));
+    var result: lua.Buffer = undefined;
+    var len: usize = 0;
+    for(grapheme) |codepoint| {
+      len += std.unicode.utf8CodepointSequenceLength(codepoint) catch unreachable;
     }
+    const buf = result.initSize(vm, len);
+    var i: usize = 0;
+    for(grapheme) |codepoint| {
+      i += std.unicode.utf8Encode(codepoint, buf[i ..]) catch unreachable;
+    }
+    result.pushResultSize(len);
   } else {
     vm.pushNil();
   }

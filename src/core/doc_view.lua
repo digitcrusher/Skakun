@@ -21,6 +21,7 @@ local utils = require('core.utils')
 
 local DocView = {
   tab_width = 8,
+  should_soft_wrap = false,
   foreground = nil,
   background = nil,
 }
@@ -28,34 +29,87 @@ local DocView = {
 function DocView.new(doc)
   return setmetatable({
     doc = doc,
-    cursor = 0,
+    cursor = 1,
   }, { __index = DocView })
 end
 
 function DocView:draw(x1, y1, x2, y2)
+  if self.should_soft_wrap then
+    self:draw_soft_wrap(x1, y1, x2, y2)
+  else
+    self:draw_cut_off(x1, y1, x2, y2)
+  end
+end
+
+function DocView:draw_soft_wrap(x1, y1, x2, y2)
   tty.set_foreground(utils.unpack_color(self.foreground))
   tty.set_background(utils.unpack_color(self.background))
 
-  local iter = self.doc.buffer:iter(0)
+  local iter = self.doc.buffer:iter(self.cursor)
+
   for y = y1, y2 do
     local x = x1
     tty.move_to(x, y)
 
     while x <= x2 do
-      local ok, char = pcall(iter.next_grapheme, iter)
+      local ok, grapheme = pcall(iter.next_grapheme, iter)
       if not ok then
-        char = {0xfffd}
-      elseif not char then break end
-      char = utf8.char(table.unpack(char))
-      if char == '\n' then break end
+        grapheme = '�'
+      elseif not grapheme or grapheme == '\n' then break end
 
-      local width = tty.width_of(char)
+      local width = tty.width_of(grapheme)
       if x + width - 1 > x2 then
         iter:rewind(iter:last_advance())
         break
       end
 
-      tty.write(char)
+      tty.write(grapheme)
+      x = x + width
+    end
+
+    while x <= x2 do
+      tty.write(' ')
+      x = x + 1
+    end
+  end
+end
+
+function DocView:draw_cut_off(x1, y1, x2, y2)
+  tty.set_foreground(utils.unpack_color(self.foreground))
+  tty.set_background(utils.unpack_color(self.background))
+
+  local start_loc = self.doc.buffer:locate_byte(self.cursor)
+
+  for y = y1, y2 do
+    local x = x1
+    tty.move_to(x, y)
+
+    local line = start_loc.line + y - y1
+    local col = start_loc.col
+    local loc = self.doc.buffer:locate_line_col(line, col)
+    local iter = self.doc.buffer:iter(loc.byte)
+    if loc.col ~= col then
+      for i = loc.col + 1, col do
+        if x > x2 then break end
+        tty.write(' ')
+        x = x + 1
+      end
+      local _, grapheme = pcall(iter.next_grapheme, iter)
+      if grapheme == '\n' then
+        iter:rewind(iter:last_advance())
+      end
+    end
+
+    while x <= x2 do
+      local ok, grapheme = pcall(iter.next_grapheme, iter)
+      if not ok then
+        grapheme = '�'
+      elseif not grapheme or grapheme == '\n' then break end
+
+      local width = tty.width_of(grapheme)
+      if x + width - 1 > x2 then break end
+
+      tty.write(grapheme)
       x = x + width
     end
 

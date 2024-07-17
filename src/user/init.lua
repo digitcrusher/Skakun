@@ -23,11 +23,27 @@ DocView.background = rgb'ffffff'
 
 local old_width, old_height
 while true do
-  local events = tty.read_events()
-  if (events[1] or {}).button == 'escape' then break end
-
   local width, height = tty.get_size()
-  if width ~= old_width or height ~= old_height then
+  local should_redraw = width ~= old_width or height ~= old_height
+  old_width = width
+  old_height = height
+
+  for _, event in ipairs(tty.read_events()) do
+    if event.type == 'press' or event.type == 'repeat' then
+      if event.button == 'escape' then
+        os.exit(0)
+      elseif event.button == 'left' then
+        view.cursor = math.max(view.cursor - 1, 1)
+      elseif event.button == 'right' then
+        view.cursor = math.min(view.cursor + 1, #view.doc.buffer)
+      end
+      should_redraw = true
+    end
+  end
+
+  if should_redraw then
+    local start = os.clock()
+
     tty.sync_begin()
     tty.set_background()
     tty.clear()
@@ -38,9 +54,7 @@ while true do
 
     tty.sync_end()
     tty.flush()
-  end
-  old_width = width
-  old_height = height
 
-  os.execute('sleep 0.1')
+    stderr.info(here, 'redraw done in ', os.clock() - start, 's')
+  end
 end

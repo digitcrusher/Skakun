@@ -34,27 +34,23 @@ delete a file under the same name in the original directory.
 
 ## Editing
 
-An **important** notice: The following functions operate on zero-based indices
-and the intervals are open (last element excluded). It's best to think that the
-offsets don't point at elements but rather at the spaces between them.
-
     len = #buffer
 
 The number of bytes in the buffer.
 
-    string = buffer:read(start, end)
+    string = buffer:read(from, to)
 
-Returns a portion of the buffer as a string in `O(log #buffer + end - start)`.
+Returns a portion of the buffer as a string in `O(log #buffer + to - from)`.
 
-    buffer:insert(offset, string)
+    buffer:insert(idx, string)
 
 Inserts a string into the buffer in `O(log #buffer + #string)`.
 
-    buffer:delete(start, end)
+    buffer:delete(from, to)
 
 Deletes a range from the buffer in `O(log #buffer)`.
 
-    buffer:copy(offset, src, start, end)
+    buffer:copy(idx, src, from, to)
 
 Copies and inserts a slice from another buffer in `O(log #buffer + log #src)`.
 A `O(log #src)` cost applies to memory but that is cached whenever the state of

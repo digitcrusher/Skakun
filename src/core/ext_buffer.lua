@@ -15,6 +15,7 @@
 -- along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 local Buffer = require('core.buffer')
+local tty = require('core.tty')
 
 local ExtBuffer = {}
 
@@ -48,33 +49,70 @@ function ExtBuffer:__len()
   return #self.buffer
 end
 
-function ExtBuffer:read(start, end_)
-  return self.buffer:read(start, end_)
+function ExtBuffer:read(from, to)
+  return self.buffer:read(from, to)
 end
 
-function ExtBuffer:insert(offset, string)
+function ExtBuffer:iter(from)
+  return self.buffer:iter(from)
+end
+
+function ExtBuffer:locate_byte(byte)
+  return self:_locate(byte, nil, nil)
+end
+
+function ExtBuffer:locate_line_col(line, col)
+  return self:_locate(nil, line, col)
+end
+
+-- Highly (un)optimized code, watch out!
+function ExtBuffer:_locate(byte, line, col)
+  local before = { byte = 1, line = 1, col = 1 }
+
+  local iter = self:iter()
+  local after = {}
+  while true do
+    local ok, grapheme = pcall(iter.next_grapheme, iter)
+    if not ok then break end
+
+    after.byte = before.byte + iter:last_advance()
+    if grapheme == '\n' then
+      after.line = before.line + 1
+      after.col = 1
+    else
+      after.line = before.line
+      after.col = before.col + tty.width_of(grapheme)
+    end
+
+    if byte and after.byte > byte then break end
+    if after.line == line and after.col > col or line and after.line > line then break end
+    local temp = before
+    before = after
+    after = temp
+  end
+
+  return before
+end
+
+function ExtBuffer:insert(idx, string)
   if self.is_frozen then
     error('buffer is frozen')
   end
-  self.buffer:insert(offset, string)
+  self.buffer:insert(idx, string)
 end
 
-function ExtBuffer:delete(start, end_)
+function ExtBuffer:delete(from, to)
   if self.is_frozen then
     error('buffer is frozen')
   end
-  self.buffer:delete(start, end_)
+  self.buffer:delete(from, to)
 end
 
-function ExtBuffer:copy(offset, src, start, end_)
+function ExtBuffer:copy(idx, src, from, to)
   if self.is_frozen then
     error('buffer is frozen')
   end
-  self.buffer:copy(offset, src, start, end_)
-end
-
-function ExtBuffer:iter(offset)
-  return self.buffer:iter(offset)
+  self.buffer:copy(idx, src, from, to)
 end
 
 function ExtBuffer:freeze()
@@ -87,7 +125,7 @@ end
 function ExtBuffer:thaw()
   if self.is_frozen then
     local copy = ExtBuffer.new()
-    copy:insert(0, self, 0, #self)
+    copy:insert(1, self, 1, #self)
     return copy
   else
     return self
