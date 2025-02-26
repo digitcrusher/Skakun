@@ -1,5 +1,5 @@
 -- Skakun - A robust and hackable hex and text editor
--- Copyright (C) 2024 Karol "digitcrusher" Łacina
+-- Copyright (C) 2024-2025 Karol "digitcrusher" Łacina
 --
 -- This program is free software: you can redistribute it and/or modify
 -- it under the terms of the GNU General Public License as published by
@@ -28,6 +28,8 @@ local windows
 if core.platform == 'windows' then
   windows = require('core.tty.windows')
 end
+
+-- HACK: filter CRs and DELs
 
 local tty = setmetatable({
   ansi_colors = {
@@ -166,10 +168,12 @@ function tty.setup()
   tty.write('\27[?1006h') -- Extend the range of mouse coordinates the terminal is able to report
   tty.write('\27]22;>default\27\\', '\27]22;\27\\') -- Push the terminal default onto the pointer shape stack
   tty.write('\27[22;0t') -- Save the window title on the stack
-  tty.load_ansi_color_palette()
+  if tty.cap.underline_color == 'true_color' or tty.cap.window_background then
+    tty.load_ansi_color_palette()
+  end
 end
 
-function tty.restore()
+function tty.restore() -- HACK: cursor shape
   tty.write('\27[0m')
   tty.write('\27[23;0t') -- Restore the window title from the stack
   tty.write('\27]22;<\27\\') -- Pop our pointer shape from the stack

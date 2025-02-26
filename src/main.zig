@@ -1,5 +1,5 @@
 // Skakun - A robust and hackable hex and text editor
-// Copyright (C) 2024 Karol "digitcrusher" Łacina
+// Copyright (C) 2024-2025 Karol "digitcrusher" Łacina
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -15,13 +15,13 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
-const target = @import("builtin").target;
+const builtin = @import("builtin");
 const build = @import("build");
 const lua = @import("ziglua");
 const c = @cImport(@cInclude("stdlib.h"));
+const assert = std.debug.assert;
 
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-const allocator = gpa.allocator(); // This would reference a stack variable, were it in main.
+var gpa = std.heap.DebugAllocator(.{}).init;
 var vm: *lua.Lua = undefined;
 
 fn cleanup_gpa() callconv(.C) void {
@@ -54,23 +54,24 @@ fn cleanup_vm() callconv(.C) void {
 }
 
 pub fn main() !void {
+  const allocator = if(builtin.mode == .Debug) gpa.allocator() else std.heap.smp_allocator;
   // This must be the final cleanup task done, since all the previous ones may
   // still need to use the allocator, for example to deallocate memory.
-  std.debug.assert(c.atexit(cleanup_gpa) == 0);
+  assert(c.atexit(cleanup_gpa) == 0);
 
-  vm = try lua.Lua.init(&allocator);
+  vm = try lua.Lua.init(allocator);
   vm.openLibs();
 
-  try vm.getSubtable(lua.registry_index, "_LOADED");
-  vm.getSubtable(-1, "core") catch {};
+  assert(vm.getSubtable(lua.registry_index, "_LOADED"));
+  assert(!vm.getSubtable(-1, "core"));
 
-  if(target.os.tag == .linux) {
+  if(builtin.os.tag == .linux) {
     _ = vm.pushString("linux");
-  } else if(target.os.tag == .windows) {
+  } else if(builtin.os.tag == .windows) {
     _ = vm.pushString("windows");
-  } else if(target.isDarwin()) {
+  } else if(builtin.os.tag.isDarwin()) {
     _ = vm.pushString("macos");
-  } else if(target.isBSD()) {
+  } else if(builtin.os.tag.isBSD()) {
     _ = vm.pushString("freebsd");
   } else {
     vm.pushNil();
@@ -87,7 +88,7 @@ pub fn main() !void {
     if(args.len >= 2 and std.mem.eql(u8, args[1], "--version")) {
       try std.io.getStdOut().writeAll(std.fmt.comptimePrint(
         \\Skakun {s}
-        \\Copyright (C) 2024 Karol "digitcrusher" Łacina
+        \\Copyright (C) 2024-2025 Karol "digitcrusher" Łacina
         \\This program comes with ABSOLUTELY NO WARRANTY.
         \\This is free software, and you are welcome to redistribute it
         \\under certain conditions; see the source for copying conditions.
@@ -151,17 +152,18 @@ pub fn main() !void {
   vm.requireF("core.buffer", lua.wrap(@import("core/buffer.zig").luaopen), false);
   vm.requireF("core.stderr", lua.wrap(@import("core/stderr.zig").luaopen), false);
   vm.requireF("core.tty.system", lua.wrap(@import("core/tty/system.zig").luaopen), false);
-  if(target.os.tag == .linux) {
+  if(builtin.os.tag == .linux) {
     vm.requireF("core.tty.linux.system", lua.wrap(@import("core/tty/linux/system.zig").luaopen), false);
-  } else if(target.os.tag == .windows) {
+  } else if(builtin.os.tag == .windows) {
     vm.requireF("core.tty.windows", lua.wrap(@import("core/tty/windows.zig").luaopen), false);
-  } else if(target.isBSD()) {
+  } else if(builtin.os.tag.isBSD()) {
     vm.requireF("core.tty.freebsd.system", lua.wrap(@import("core/tty/freebsd/system.zig").luaopen), false);
   }
 
   // We let Zig modules do their cleanup after Lua's turn.
-  std.debug.assert(c.atexit(cleanup_vm) == 0);
+  assert(c.atexit(cleanup_vm) == 0);
 
+  // HACK: print lua error to redirected stderr
   try vm.doString(
     \\-- main() in main.zig
     \\local core = require('core')

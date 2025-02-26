@@ -1,5 +1,5 @@
 -- Skakun - A robust and hackable hex and text editor
--- Copyright (C) 2024 Karol "digitcrusher" Łacina
+-- Copyright (C) 2024-2025 Karol "digitcrusher" Łacina
 --
 -- This program is free software: you can redistribute it and/or modify
 -- it under the terms of the GNU General Public License as published by
@@ -15,6 +15,8 @@
 -- along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 local tty = require('core.tty')
+
+tty.clear()
 
 -- Everything
 tty.move_to(40, 10)

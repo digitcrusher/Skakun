@@ -1,5 +1,5 @@
 -- Skakun - A robust and hackable hex and text editor
--- Copyright (C) 2024 Karol "digitcrusher" Łacina
+-- Copyright (C) 2024-2025 Karol "digitcrusher" Łacina
 --
 -- This program is free software: you can redistribute it and/or modify
 -- it under the terms of the GNU General Public License as published by
@@ -409,7 +409,7 @@ function InputParser:take_kitty_key(buf, offset)
       text = codepoint and utf8.char(codepoint),
     }}, new_offset
   elseif codepoint then
-    stderr.warn(here, 'unknown kitty keycode: ',  keycode)
+    stderr.warn(here, 'unknown kitty keycode: ', keycode)
     return {{ type = 'paste', text = utf8.char(codepoint) }}, new_offset
   else
     return {}, new_offset
@@ -569,7 +569,7 @@ function InputParser:take_key(buf, offset)
   if key then
     return {
       { type = 'press',   button = key.button, alt = alt, ctrl = key.ctrl or false, shift = key.shift or false, text = key.text },
-      { type = 'release', button = key.button, alt = alt, ctrl = key.ctrl or false, shift = key.shift or false, text = key.text },
+      { type = 'release', button = key.button, alt = alt, ctrl = key.ctrl or false, shift = key.shift or false },
     }, new_offset
   else
     return nil, offset

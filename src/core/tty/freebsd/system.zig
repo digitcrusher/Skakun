@@ -1,5 +1,5 @@
 // Skakun - A robust and hackable hex and text editor
-// Copyright (C) 2024 Karol "digitcrusher" Łacina
+// Copyright (C) 2024-2025 Karol "digitcrusher" Łacina
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -15,7 +15,6 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
-const target = @import("builtin").target;
 const lua = @import("ziglua");
 const c = @cImport({
   @cInclude("dev/evdev/input-event-codes.h");

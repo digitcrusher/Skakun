@@ -1,5 +1,5 @@
 // Skakun - A robust and hackable hex and text editor
-// Copyright (C) 2024 Karol "digitcrusher" Łacina
+// Copyright (C) 2024-2025 Karol "digitcrusher" Łacina
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -15,9 +15,10 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
-const target = @import("builtin").target;
+const builtin = @import("builtin");
 const lua = @import("ziglua");
 const c = @cImport(@cInclude("unistd.h"));
+const assert = std.debug.assert;
 const posix = std.posix;
 
 var original_fd: ?posix.fd_t = null;
@@ -25,8 +26,8 @@ var original_fd: ?posix.fd_t = null;
 fn redirect(vm: *lua.Lua) i32 {
   if(original_fd != null) return 0;
 
-  vm.getSubtable(lua.registry_index, "_LOADED") catch unreachable;
-  vm.getSubtable(-1, "core.stderr") catch unreachable;
+  assert(vm.getSubtable(lua.registry_index, "_LOADED"));
+  assert(vm.getSubtable(-1, "core.stderr"));
   _ = vm.getField(-1, "path");
   const path = vm.checkString(-1);
   vm.pop(3);
@@ -65,9 +66,9 @@ pub fn luaopen(vm: *lua.Lua) i32 {
   const allocator = vm.allocator();
   vm.newLib(&funcs);
 
-  const env_var = if(target.os.tag == .windows)
+  const env_var = if(builtin.os.tag == .windows)
       "TEMP" // %TEMP%, unlike %LOCALAPPDATA%, is periodically cleaned by the system.
-    else if(target.isDarwin())
+    else if(builtin.os.tag.isDarwin())
       "HOME"
     else
       "XDG_RUNTIME_DIR"; // I'm not even sure, if this is the right place.
@@ -76,9 +77,9 @@ pub fn luaopen(vm: *lua.Lua) i32 {
 
   const path = std.fmt.allocPrintZ(
     allocator,
-    if(target.os.tag == .windows)
+    if(builtin.os.tag == .windows)
       "{s}\\Skakun\\{}.log"
-    else if(target.isDarwin())
+    else if(builtin.os.tag.isDarwin())
       "{s}/Library/Logs/Skakun/{}.log" // I absolutely adore this.
     else
       "{s}/skakun/{}.log",
@@ -104,7 +105,7 @@ pub fn luaopen(vm: *lua.Lua) i32 {
     \\function stderr.info(where, ...) stderr.log('info', where, ...) end
   ) catch unreachable;
   vm.pushValue(-2);
-  vm.call(1, 0);
+  vm.call(.{ .args = 1, .results = 0 });
 
   return 1;
 }

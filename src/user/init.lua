@@ -55,6 +55,6 @@ while true do
     tty.sync_end()
     tty.flush()
 
-    stderr.info(here, 'redraw done in ', os.clock() - start, 's')
+    stderr.info(here, 'redraw done in ', math.floor(1000000 * (os.clock() - start)), 'µs')
   end
 end

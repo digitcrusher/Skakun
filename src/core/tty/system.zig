@@ -1,5 +1,5 @@
 // Skakun - A robust and hackable hex and text editor
-// Copyright (C) 2024 Karol "digitcrusher" Łacina
+// Copyright (C) 2024-2025 Karol "digitcrusher" Łacina
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
-const target = @import("builtin").target;
+const builtin = @import("builtin");
 const lua = @import("ziglua");
 const c = @cImport({
   @cInclude("string.h");
@@ -33,7 +33,7 @@ const File = std.fs.File;
 const posix = std.posix;
 
 pub var is_open = false;
-pub var file: if(target.os.tag == .windows) struct { in: File, out: File } else File = undefined;
+pub var file: if(builtin.os.tag == .windows) struct { in: File, out: File } else File = undefined;
 pub var reader: File.Reader = undefined;
 pub var writer: std.io.BufferedWriter(4096, File.Writer) = undefined;
 
@@ -41,7 +41,7 @@ fn open(vm: *lua.Lua) i32  {
   if(is_open) vm.raiseErrorStr("tty is already open", .{});
   // We get hold of the controlling terminal directly, because stdin and stdout
   // might have been redirected to pipes.
-  if(target.os.tag == .windows) {
+  if(builtin.os.tag == .windows) {
     // On Windows we have the special device files "CONIN$", "CONOUT$" and
     // "CON". "CON" combines both input from and output to the terminal, which
     // is what we want. Thanks to backwards compatibility with MS-DOS, such
@@ -92,7 +92,7 @@ fn open(vm: *lua.Lua) i32  {
       file.in.close();
       vm.raiseErrorStr("failed to open CONOUT$: %s", .{@errorName(err).ptr});
     };
-    // Yeah… uhh… it turns out CON can be opened with read or write access but not both…
+    // Yeah… uhh… it turns out CON can be opened with read or write access but not both…
     // Source: https://stackoverflow.com/questions/47534039/windows-console-handle-for-con-device#comment82036446_47534039
     reader = file.in.reader();
     writer = std.io.bufferedWriter(file.out.writer());
@@ -113,7 +113,7 @@ fn close(_: *lua.Lua) i32 {
   if(!is_open) return 0;
   is_open = false;
   writer.flush() catch {};
-  if(target.os.tag == .windows) {
+  if(builtin.os.tag == .windows) {
     file.in.close();
     file.out.close();
   } else {
@@ -177,7 +177,7 @@ fn read(vm: *lua.Lua) i32  {
 fn get_size(vm: *lua.Lua) i32 {
   if(!is_open) vm.raiseErrorStr("tty is closed", .{});
   var result: c.winsize = undefined;
-  if(std.c.ioctl(if(target.os.tag == .windows) file.out.handle else file.handle, c.TIOCGWINSZ, &result) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
+  if(std.c.ioctl(if(builtin.os.tag == .windows) file.out.handle else file.handle, c.TIOCGWINSZ, &result) < 0) vm.raiseErrorStr("%s", .{c.strerror(std.c._errno().*)});
   vm.pushInteger(result.ws_col);
   vm.pushInteger(result.ws_row);
   return 2;

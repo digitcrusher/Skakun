@@ -1,5 +1,5 @@
 // Skakun - A robust and hackable hex and text editor
-// Copyright (C) 2024 Karol "digitcrusher" Łacina
+// Copyright (C) 2024-2025 Karol "digitcrusher" Łacina
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -542,7 +542,7 @@ pub const Buffer = struct {
     }
 
     fn ascend(self: *Iterator) *Node {
-      const result = self.path.pop();
+      const result = self.path.pop().?;
       result.unref(self.buffer.editor);
       return result;
     }
@@ -636,15 +636,13 @@ pub const Buffer = struct {
       }
     }
 
-    // Consumes overlong encodings and surrogate halves in whole - in clear
-    // defiance of Subsection "U+FFFD Substitution of Maximal Subparts",
-    // Chapter 3.
+    // Deviates from Subsection "U+FFFD Substitution of Maximal Subparts",
+    // Chapter 3 only in the handling of truncated overlong encodings and
+    // truncated surrogate halves.
     pub fn next_codepoint(self: *Iterator) error {InvalidUtf8}!?u21 {
       var buf: [4]u8 = undefined;
-      if(self.next()) |start| {
-        buf[0] = start;
-        self.last_advance = 1;
-      } else return null;
+      buf[0] = self.next() orelse return null;
+      self.last_advance = 1;
 
       const bytec = std.unicode.utf8ByteSequenceLength(buf[0]) catch return error.InvalidUtf8;
       for(1 .. bytec) |i| {
@@ -657,16 +655,21 @@ pub const Buffer = struct {
         }
       }
 
-      return std.unicode.utf8Decode(buf[0 .. bytec]) catch error.InvalidUtf8;
+      return std.unicode.utf8Decode(buf[0 .. bytec]) catch {
+        self.rewind(bytec - 1) catch unreachable;
+        self.last_advance = 1;
+        return error.InvalidUtf8;
+      };
     }
 
     // Writing the result into a fixed-size buffer is inherently unsafe
     // because grapheme clusters can be arbitrarily long - see "Zalgo text".
     // Stops at a grapheme cluster break, or before the first UTF-8 error.
-    pub fn next_grapheme(self: *Iterator, dest: *std.ArrayList(u21)) (Allocator.Error || error {InvalidUtf8})!?[]u21 {
+    pub fn next_grapheme(self: *Iterator, dest: *std.ArrayList(u8)) (Allocator.Error || error {InvalidUtf8})!?[]u8 {
       const start = dest.items.len;
 
-      try dest.append(try self.next_codepoint() orelse return null);
+      var buf: [4]u8 = undefined;
+      try dest.appendSlice(buf[0 .. std.unicode.utf8Encode(try self.next_codepoint() orelse return null, &buf) catch unreachable]);
       var last_advance = self.last_advance;
       defer self.last_advance = last_advance;
 
@@ -680,7 +683,7 @@ pub const Buffer = struct {
           self.rewind(self.last_advance) catch unreachable;
           break;
         }
-        try dest.append(lookahead);
+        try dest.appendSlice(buf[0 .. std.unicode.utf8Encode(lookahead, &buf) catch unreachable]);
         last_advance += self.last_advance;
       }
 

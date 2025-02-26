@@ -1,5 +1,5 @@
 // Skakun - A robust and hackable hex and text editor
-// Copyright (C) 2024 Karol "digitcrusher" Łacina
+// Copyright (C) 2024-2025 Karol "digitcrusher" Łacina
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -15,11 +15,11 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
-const target = @import("builtin").target;
 const lua = @import("ziglua");
 const buffer = @import("../buffer.zig");
-const Buffer = buffer.Buffer;
 const c = @cImport(@cInclude("stdlib.h"));
+const assert = std.debug.assert;
+const Buffer = buffer.Buffer;
 
 var editor: buffer.Editor = undefined;
 
@@ -30,6 +30,7 @@ fn raise_err(vm: *lua.Lua, err: buffer.Error, err_msg: ?[]u8) noreturn {
     error.AntivirusInterference => "antivirus interfered with file operations",
     error.BadPathName => "invalid path name",
     error.BrokenPipe => "broken pipe",
+    error.Canceled => unreachable, // We don't use timerfd (https://github.com/ziglang/zig/pull/20311).
     error.ConnectionRefused => "connection refused",
     error.ConnectionResetByPeer => "connection reset by peer",
     error.ConnectionTimedOut => "connection timed out",
@@ -49,6 +50,7 @@ fn raise_err(vm: *lua.Lua, err: buffer.Error, err_msg: ?[]u8) noreturn {
     error.IsDir => "is a directory",
     error.LinkQuotaExceeded => "too many links",
     error.LockedMemoryLimitExceeded => unreachable, // We don't use MAP_LOCKED.
+    error.LockViolation => "file locked by another process",
     error.MemoryMappingNotSupported => "mmap not supported",
     error.MultipleHardLinks => "file has multiple hard links",
     error.NameServerFailure => "unknown failure in name resolution",
@@ -67,6 +69,7 @@ fn raise_err(vm: *lua.Lua, err: buffer.Error, err_msg: ?[]u8) noreturn {
     error.PermissionDenied => unreachable, // We don't use PROT_EXEC.
     error.PipeBusy => "all pipe instances are busy",
     error.ProcessFdQuotaExceeded => "too many open files",
+    error.ProcessNotFound => unreachable, // We don't access the /proc filesystem (https://github.com/ziglang/zig/pull/21430).
     error.ReadOnlyFileSystem => "read-only file system",
     error.RenameAcrossMountPoints => unreachable, // from posix.rename in Buffer.save
     error.SharingViolation => unreachable, // Never actually generated.
@@ -97,8 +100,8 @@ fn new(vm: *lua.Lua) i32 {
 fn open(vm: *lua.Lua) i32 {
   const path = vm.checkString(1);
 
-  vm.getSubtable(lua.registry_index, "_LOADED") catch unreachable;
-  vm.getSubtable(-1, "core.buffer") catch unreachable;
+  assert(vm.getSubtable(lua.registry_index, "_LOADED"));
+  assert(vm.getSubtable(-1, "core.buffer"));
   _ = vm.getField(-1, "max_open_size");
   editor.max_open_size = @intCast(vm.checkInteger(-1));
   vm.pop(3);
@@ -140,7 +143,7 @@ fn read(vm: *lua.Lua) i32 {
   }
   var result: lua.Buffer = undefined;
   const readc = self.read(@intCast(from - 1), result.initSize(vm, @intCast(to - from + 1))) catch |err| raise_err(vm, err, null);
-  std.debug.assert(readc == to - from + 1);
+  assert(readc == to - from + 1);
   result.pushResultSize(readc);
   return 1;
 }
@@ -256,7 +259,7 @@ fn next_codepoint(vm: *lua.Lua) i32 {
 fn next_grapheme(vm: *lua.Lua) i32 {
   const self = vm.checkUserdata(Buffer.Iterator, 1, "core.buffer.iter");
 
-  var dest = std.ArrayList(u21).init(vm.allocator());
+  var dest = std.ArrayList(u8).init(vm.allocator());
   defer dest.deinit();
   const maybe_grapheme = self.next_grapheme(&dest) catch |err| {
     dest.deinit();
@@ -264,17 +267,7 @@ fn next_grapheme(vm: *lua.Lua) i32 {
   };
 
   if(maybe_grapheme) |grapheme| {
-    var result: lua.Buffer = undefined;
-    var len: usize = 0;
-    for(grapheme) |codepoint| {
-      len += std.unicode.utf8CodepointSequenceLength(codepoint) catch unreachable;
-    }
-    const buf = result.initSize(vm, len);
-    var i: usize = 0;
-    for(grapheme) |codepoint| {
-      i += std.unicode.utf8Encode(codepoint, buf[i ..]) catch unreachable;
-    }
-    result.pushResultSize(len);
+    _ = vm.pushString(grapheme);
   } else {
     vm.pushNil();
   }
@@ -302,7 +295,7 @@ fn cleanup() callconv(.C) void {
 
 pub fn luaopen(vm: *lua.Lua) i32 {
   editor = buffer.Editor.init(vm.allocator());
-  std.debug.assert(c.atexit(cleanup) == 0);
+  assert(c.atexit(cleanup) == 0);
 
   vm.newLib(&buffer_methods);
   vm.pushInteger(@intCast(editor.max_open_size));
