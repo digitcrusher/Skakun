@@ -23,6 +23,17 @@ The absolute path to Skakun's config directory.
 
 Command-line arguments, including the executable's name.
 
+    core.should_forward_stderr_on_exit
+
+Indicates whether our file-backed stderr will be copied back to the original
+stderr on program exit or failure. You will most likely want to change this to
+`false` on startup. Automatically resets to `true` whenever a cleanup function
+or the `user` module errors.
+
+    core.stderr_path
+
+The path to the file which stderr writes to.
+
     core.version
 
 Skakun's version string, e.g. `'1.2.3-dirty+22552eb'`.

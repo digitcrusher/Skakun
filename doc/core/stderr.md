@@ -8,15 +8,6 @@ access them after exit. Moreover, we reuse stderr to prevent child processes
 from writing their error messages to the terminal screen (the usual initial
 target of stderr).
 
-    stderr.redirect()
-
-Redirects stderr to a newly-created file located at `stderr.path` (which you may
-change).
-
-    stderr.restore()
-
-Closes the file and restores the original stderr.
-
     -- At the top of the source file:
     local here = ...
 

@@ -4,11 +4,8 @@ local stderr = require('core.stderr')
 local tty = require('core.tty')
 local utils = require('core.utils')
 
+core.should_forward_stderr_on_exit = false
 utils.lock_globals()
-core.add_cleanup(stderr.restore)
-stderr.redirect()
-stderr.info(here, 'Skakun ', core.version, ' on ', core.platform, ', ', os.date())
-
 core.add_cleanup(tty.restore)
 tty.setup()
 

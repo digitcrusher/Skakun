@@ -18,46 +18,107 @@ const std = @import("std");
 const builtin = @import("builtin");
 const build = @import("build");
 const lua = @import("ziglua");
-const c = @cImport(@cInclude("stdlib.h"));
+const c = @cImport({
+  @cInclude("stdlib.h");
+  @cInclude("time.h");
+  @cInclude("unistd.h");
+});
 const assert = std.debug.assert;
+const posix = std.posix;
 
-var gpa = std.heap.DebugAllocator(.{}).init;
+var debug_allocator = std.heap.DebugAllocator(.{}).init;
+const allocator = if(builtin.mode == .Debug) debug_allocator.allocator() else std.heap.smp_allocator;
+
+var stderr_path: []const u8 = undefined;
+var original_stderr: posix.fd_t = undefined;
+var should_forward_stderr_on_exit = true;
+
 var vm: *lua.Lua = undefined;
 
-fn cleanup_gpa() callconv(.C) void {
-  _ = gpa.deinit();
+fn cleanup_stderr(_: i32) callconv(.C) void {
+  if(should_forward_stderr_on_exit) {
+    _ = posix.sendfile(original_stderr, posix.STDERR_FILENO, 0, 0, &.{}, &.{}, 0) catch unreachable;
+  }
+  posix.dup2(original_stderr, posix.STDERR_FILENO) catch unreachable;
+  posix.close(original_stderr);
+}
+
+fn cleanup_stderr_with_leak_check() callconv(.C) void {
+  allocator.free(stderr_path);
+  _ = debug_allocator.deinit();
+  cleanup_stderr(0);
 }
 
 fn cleanup_vm() callconv(.C) void {
   // The initial comments in doString's improve stack trace legibility.
-  vm.doString(
-    \\-- cleanup() in main.zig
+  vm.loadString(
+    \\-- main.zig cleanup_vm()
     \\local core = require('core')
-    \\local errors = {}
     \\for i = #core.cleanups, 1, -1 do
     \\  local func = core.cleanups[i]
     \\  -- Removing from the list before calling prevents any mischievous
     \\  -- function from causing an exit loop.
     \\  core.cleanups[i] = nil
     \\  xpcall(func, function(err)
-    \\    errors[#errors + 1] = debug.traceback(err, 2)
+    \\    io.stderr:write(debug.traceback(err, 2), '\n')
+    \\    core.should_forward_stderr_on_exit = true
     \\  end)
     \\end
-    \\for _, error in ipairs(errors) do
-    \\  io.stderr:write(error, '\n')
-    \\end
-    \\if #errors > 0 then
-    \\  io.stderr:write('Some errors occurred during cleanup.\n')
-    \\end
+    \\return core.should_forward_stderr_on_exit
   ) catch unreachable;
+  vm.call(.{ .args = 0, .results = 1 });
+  should_forward_stderr_on_exit = vm.toBoolean(-1);
   vm.deinit();
 }
 
 pub fn main() !void {
-  const allocator = if(builtin.mode == .Debug) gpa.allocator() else std.heap.smp_allocator;
-  // This must be the final cleanup task done, since all the previous ones may
-  // still need to use the allocator, for example to deallocate memory.
-  assert(c.atexit(cleanup_gpa) == 0);
+  // By putting defer statements in code blocks, we ensure that they really run
+  // and aren't bypassed by a call to os.exit, so that the allocator doesn't
+  // spew out unnecessary memory leak warnings in cleanup.
+  {
+    const base_dir = try std.process.getEnvVarOwned(
+      allocator,
+      if(builtin.os.tag == .windows)
+        "TEMP" // %TEMP%, unlike %LOCALAPPDATA%, is periodically cleaned by the system.
+      else if(builtin.os.tag.isDarwin())
+        "HOME"
+      else
+        "XDG_RUNTIME_DIR", // I'm not even sure, if this is the right place.
+    );
+    defer allocator.free(base_dir);
+
+    stderr_path = try std.fmt.allocPrint(
+      allocator,
+      if(builtin.os.tag == .windows)
+        "{s}\\Skakun\\{}.log"
+      else if(builtin.os.tag.isDarwin())
+        "{s}/Library/Logs/Skakun/{}.log" // I absolutely adore this.
+      else
+        "{s}/skakun/{}.log",
+      .{base_dir, c.getpid()},
+    );
+    errdefer allocator.free(stderr_path);
+
+    try std.fs.cwd().makePath(std.fs.path.dirname(stderr_path) orelse ".");
+    const new_stderr = try posix.open(stderr_path, .{ .ACCMODE = .RDWR, .APPEND = true, .CREAT = true, .TRUNC = true }, std.fs.File.default_mode);
+    defer posix.close(new_stderr);
+    original_stderr = try posix.dup(posix.STDERR_FILENO);
+    errdefer posix.close(original_stderr);
+    try posix.dup2(new_stderr, posix.STDERR_FILENO);
+    errdefer posix.dup2(original_stderr, posix.STDERR_FILENO) catch unreachable;
+
+    // This innocent little log header has a double purpose of checking whether
+    // our new setup works, and restoring the original if not. We wouldn't be
+    // able to do that later and any attempts to write anything to stderr
+    // (including errors caused by writing to stderr) would silently fail.
+    try std.io.getStdErr().writer().print("Skakun {s} on {s} {s}, {s}", .{build.version, @tagName(builtin.cpu.arch), @tagName(builtin.os.tag), c.ctime(&c.time(null))});
+
+    if(c.atexit(cleanup_stderr_with_leak_check) != 0) return error.OutOfMemory;
+    // If any errors were to occur in this code block past the registration of
+    // this SIGABRT handler, then both the errdefer's and the handler would be
+    // executed, which is obviously undesirable.
+    posix.sigaction(posix.SIG.ABRT, &.{ .handler = .{ .handler = cleanup_stderr }, .mask = posix.empty_sigset, .flags = 0 }, null);
+  }
 
   vm = try lua.Lua.init(allocator);
   vm.openLibs();
@@ -78,9 +139,6 @@ pub fn main() !void {
   }
   vm.setField(-2, "platform");
 
-  // By putting args and exe_dir in code blocks, we ensure that the deferred
-  // deallocations really run and aren't bypassed by a call to os.exit, so that
-  // the allocator doesn't spew out unnecessary memory leak warnings in cleanup.
   {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -94,6 +152,7 @@ pub fn main() !void {
         \\under certain conditions; see the source for copying conditions.
         \\
       , .{build.version}));
+      should_forward_stderr_on_exit = false;
       return;
     }
 
@@ -104,6 +163,12 @@ pub fn main() !void {
     }
     vm.setField(-2, "args");
   }
+
+  _ = vm.pushBoolean(should_forward_stderr_on_exit);
+  vm.setField(-2, "should_forward_stderr_on_exit");
+
+  _ = vm.pushString(stderr_path);
+  vm.setField(-2, "stderr_path");
 
   _ = vm.pushString(build.version);
   vm.setField(-2, "version");
@@ -116,6 +181,7 @@ pub fn main() !void {
   }
 
   try vm.doString(
+    \\-- main.zig main() #1
     \\xpcall(
     \\  function()
     \\    local core = require('core')
@@ -150,7 +216,6 @@ pub fn main() !void {
   );
 
   vm.requireF("core.buffer", lua.wrap(@import("core/buffer.zig").luaopen), false);
-  vm.requireF("core.stderr", lua.wrap(@import("core/stderr.zig").luaopen), false);
   vm.requireF("core.tty.system", lua.wrap(@import("core/tty/system.zig").luaopen), false);
   if(builtin.os.tag == .linux) {
     vm.requireF("core.tty.linux.system", lua.wrap(@import("core/tty/linux/system.zig").luaopen), false);
@@ -161,19 +226,14 @@ pub fn main() !void {
   }
 
   // We let Zig modules do their cleanup after Lua's turn.
-  assert(c.atexit(cleanup_vm) == 0);
+  if(c.atexit(cleanup_vm) != 0) return error.OutOfMemory;
 
-  // HACK: print lua error to redirected stderr
   try vm.doString(
-    \\-- main() in main.zig
+    \\-- main.zig main() #2
     \\local core = require('core')
     \\xpcall(require, function(err)
-    \\  for i = #core.cleanups, 1, -1 do
-    \\    local func = core.cleanups[i]
-    \\    core.cleanups[i] = nil
-    \\    pcall(func)
-    \\  end
     \\  io.stderr:write(debug.traceback(err, 2), '\n')
+    \\  core.should_forward_stderr_on_exit = true
     \\  os.exit(1)
     \\end, 'user')
   );
