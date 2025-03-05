@@ -121,4 +121,58 @@ function utils.unpack_color(color)
   end
 end
 
+local escapes = {
+  ['\\'] = [[\\]],
+  ['\''] = [[\']],
+  ['\a'] = [[\a]],
+  ['\b'] = [[\b]],
+  ['\f'] = [[\f]],
+  ['\n'] = [[\n]],
+  ['\r'] = [[\r]],
+  ['\t'] = [[\t]],
+  ['\v'] = [[\v]],
+  ['\127'] = [[\127]],
+}
+for i = 0, 31 do
+  escapes[string.char(i)] = escapes[string.char(i)] or ('\\' .. i)
+end
+function utils.tostring(value, visited)
+  if type(value) == 'table' then
+    visited = visited or {}
+    if visited[value] then
+      return tostring(value)
+    end
+    visited[value] = true
+
+    local keys = {}
+    for k in pairs(value) do
+      keys[#keys + 1] = k
+    end
+    table.sort(keys)
+
+    local result = '{\n'
+    for _, k in ipairs(keys) do
+      local v = utils.tostring(value[k], visited)
+      if type(k) ~= 'string' or not k:match('^[%a_][%w_]*$') then
+        k = '[' .. utils.tostring(k, visited) .. ']'
+      end
+      result = result .. '  ' .. k:gsub('\n', '\n  ') .. ' = ' .. v:gsub('\n', '\n  ') .. ',\n'
+    end
+    return result .. '}'
+
+  elseif type(value) == 'string' then
+    return "'" .. value:gsub("[\\'%c]", escapes) .. "'"
+  else
+    return tostring(value)
+  end
+end
+
+function utils.copy(table)
+  local result = {}
+  for k, v in pairs(table) do
+    result[k] = v
+  end
+  return result
+end
+
 return utils

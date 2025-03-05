@@ -35,7 +35,9 @@ const posix = std.posix;
 pub var is_open = false;
 pub var file: if(builtin.os.tag == .windows) struct { in: File, out: File } else File = undefined;
 pub var reader: File.Reader = undefined;
-pub var writer: std.io.BufferedWriter(4096, File.Writer) = undefined;
+// The buffer should be big enough to hold the whole screen in order to prevent
+// screen flickering. The difference is especially noticeable in xterm.
+pub var writer: std.io.BufferedWriter(32768, File.Writer) = undefined;
 
 fn open(vm: *lua.Lua) i32  {
   if(is_open) vm.raiseErrorStr("tty is already open", .{});
@@ -95,7 +97,7 @@ fn open(vm: *lua.Lua) i32  {
     // Yeah… uhh… it turns out CON can be opened with read or write access but not both…
     // Source: https://stackoverflow.com/questions/47534039/windows-console-handle-for-con-device#comment82036446_47534039
     reader = file.in.reader();
-    writer = std.io.bufferedWriter(file.out.writer());
+    writer = .{ .unbuffered_writer = file.out.writer() };
   } else {
     // Why "/dev/tty" exactly? Well, the answer is simple and well-documented
     // (unlike that other operating system):
@@ -103,7 +105,7 @@ fn open(vm: *lua.Lua) i32  {
     // - https://tldp.org/HOWTO/Text-Terminal-HOWTO-7.html
     file = std.fs.cwd().openFile("/dev/tty", .{ .mode = .read_write }) catch |err| vm.raiseErrorStr("failed to open /dev/tty: %s", .{@errorName(err).ptr});
     reader = file.reader();
-    writer = std.io.bufferedWriter(file.writer());
+    writer = .{ .unbuffered_writer = file.writer() };
   }
   is_open = true;
   return 0;

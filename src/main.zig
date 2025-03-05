@@ -54,12 +54,11 @@ fn cleanup_vm() callconv(.C) void {
   vm.loadString(
     \\-- main.zig cleanup_vm()
     \\local core = require('core')
+    \\function os.exit()
+    \\  error('os.exit is disabled during cleanup', 2)
+    \\end
     \\for i = #core.cleanups, 1, -1 do
-    \\  local func = core.cleanups[i]
-    \\  -- Removing from the list before calling prevents any mischievous
-    \\  -- function from causing an exit loop.
-    \\  core.cleanups[i] = nil
-    \\  xpcall(func, function(err)
+    \\  xpcall(core.cleanups[i], function(err)
     \\    io.stderr:write(debug.traceback(err, 2), '\n')
     \\    core.should_forward_stderr_on_exit = true
     \\  end)

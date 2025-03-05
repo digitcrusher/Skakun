@@ -14,20 +14,20 @@
 -- You should have received a copy of the GNU General Public License
 -- along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-local ExtBuffer = require('core.ext_buffer')
+local DocBuffer = require('core.doc.buffer')
 
 local Doc = {}
 
 function Doc.new()
   return setmetatable({
-    buffer = ExtBuffer.new(),
+    buffer = DocBuffer.new(),
     path = nil,
   }, { __index = Doc })
 end
 
 function Doc.open(path)
   return setmetatable({
-    buffer = ExtBuffer.open(path),
+    buffer = DocBuffer.open(path),
     path = path,
   }, { __index = Doc })
 end

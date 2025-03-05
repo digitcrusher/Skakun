@@ -1,5 +1,5 @@
 .{
-  .name = "Skakun",
+  .name = .skakun,
   .version = "0.0.0",
   .dependencies = .{
     .libgrapheme = .{
@@ -19,4 +19,5 @@
     "README.md",
     "src",
   },
+  .fingerprint = 0xedcceddb22552ebf,
 }

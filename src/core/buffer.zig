@@ -51,6 +51,7 @@ fn raise_err(vm: *lua.Lua, err: buffer.Error, err_msg: ?[]u8) noreturn {
     error.LinkQuotaExceeded => "too many links",
     error.LockedMemoryLimitExceeded => unreachable, // We don't use MAP_LOCKED.
     error.LockViolation => "file locked by another process",
+    error.MappingAlreadyExists => unreachable, // We don't use MAP_FIXED_NOREPLACE.
     error.MemoryMappingNotSupported => "mmap not supported",
     error.MultipleHardLinks => "file has multiple hard links",
     error.NameServerFailure => "unknown failure in name resolution",

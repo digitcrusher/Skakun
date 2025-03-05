@@ -76,7 +76,7 @@ pub fn build(b: *std.Build) void {
   var run = b.addRunArtifact(exe);
   if(b.option([]const u8, "term", "The terminal to run the app in")) |term| {
     if(std.mem.eql(u8, term, "gnome-terminal")) {
-      run = b.addSystemCommand(&.{"gnome-terminal", "--", "sh", "-c", "./zig-out/bin/skak \"$@\"; sh", "_"});
+      run = b.addSystemCommand(&.{"gnome-terminal", "--", "sh", "-c", "./zig-out/bin/skak \"$@\"; sh", ""});
     } else if(std.mem.eql(u8, term, "kitty")) {
       run = b.addSystemCommand(&.{"kitty", "--hold"});
       run.addArtifactArg(exe);
@@ -84,12 +84,12 @@ pub fn build(b: *std.Build) void {
       run = b.addSystemCommand(&.{"konsole", "--hold", "-e"});
       run.addArtifactArg(exe);
     } else if(std.mem.eql(u8, term, "st")) {
-      run = b.addSystemCommand(&.{"st", "-e", "sh", "-c", "./zig-out/bin/skak \"$@\"; sh", "_"});
+      run = b.addSystemCommand(&.{"st", "-e", "sh", "-c", "./zig-out/bin/skak \"$@\"; sh", ""});
     } else if(std.mem.eql(u8, term, "xfce4-terminal")) {
       run = b.addSystemCommand(&.{"xfce4-terminal", "--hold", "-x"});
       run.addArtifactArg(exe);
     } else if(std.mem.eql(u8, term, "xterm")) {
-      run = b.addSystemCommand(&.{"xterm", "-hold"});
+      run = b.addSystemCommand(&.{"xterm", "-hold", "-fullscreen", "-e"});
       run.addArtifactArg(exe);
     } else {
       std.log.err("unknown terminal: {s}", .{term});

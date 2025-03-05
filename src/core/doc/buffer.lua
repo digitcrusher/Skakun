@@ -15,116 +15,80 @@
 -- along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 local Buffer = require('core.buffer')
-local tty = require('core.tty')
 
-local ExtBuffer = {}
+local DocBuffer = {}
 
-function ExtBuffer.new()
+function DocBuffer.new()
   return setmetatable({
     buffer = Buffer.new(),
     is_frozen = false,
     freeze_time = nil,
+    loc_cache = DocBuffer.LocSet.new(),
   }, {
-    __index = ExtBuffer,
-    __len = ExtBuffer.__len,
+    __index = DocBuffer,
+    __len = DocBuffer.__len,
   })
 end
 
-function ExtBuffer.open(path)
+function DocBuffer.open(path)
   return setmetatable({
     buffer = Buffer.open(path),
     is_frozen = false,
     freeze_time = nil,
+    loc_cache = DocBuffer.LocSet.new(),
   }, {
-    __index = ExtBuffer,
-    __len = ExtBuffer.__len,
+    __index = DocBuffer,
+    __len = DocBuffer.__len,
   })
 end
 
-function ExtBuffer:save(path)
+function DocBuffer:save(path)
   self.buffer:save(path)
 end
 
-function ExtBuffer:__len()
+function DocBuffer:__len()
   return #self.buffer
 end
 
-function ExtBuffer:read(from, to)
+function DocBuffer:read(from, to)
   return self.buffer:read(from, to)
 end
 
-function ExtBuffer:iter(from)
+function DocBuffer:iter(from)
   return self.buffer:iter(from)
 end
 
-function ExtBuffer:locate_byte(byte)
-  return self:_locate(byte, nil, nil)
-end
-
-function ExtBuffer:locate_line_col(line, col)
-  return self:_locate(nil, line, col)
-end
-
--- Highly (un)optimized code, watch out!
-function ExtBuffer:_locate(byte, line, col)
-  local before = { byte = 1, line = 1, col = 1 }
-
-  local iter = self:iter()
-  local after = {}
-  while true do
-    local ok, grapheme = pcall(iter.next_grapheme, iter)
-    if not ok then break end
-
-    after.byte = before.byte + iter:last_advance()
-    if grapheme == '\n' then
-      after.line = before.line + 1
-      after.col = 1
-    else
-      after.line = before.line
-      after.col = before.col + tty.width_of(grapheme)
-    end
-
-    if byte and after.byte > byte then break end
-    if after.line == line and after.col > col or line and after.line > line then break end
-    local temp = before
-    before = after
-    after = temp
-  end
-
-  return before
-end
-
-function ExtBuffer:insert(idx, string)
+function DocBuffer:insert(idx, string)
   if self.is_frozen then
     error('buffer is frozen')
   end
   self.buffer:insert(idx, string)
 end
 
-function ExtBuffer:delete(from, to)
+function DocBuffer:delete(from, to)
   if self.is_frozen then
     error('buffer is frozen')
   end
   self.buffer:delete(from, to)
 end
 
-function ExtBuffer:copy(idx, src, from, to)
+function DocBuffer:copy(idx, src, from, to)
   if self.is_frozen then
     error('buffer is frozen')
   end
   self.buffer:copy(idx, src, from, to)
 end
 
-function ExtBuffer:freeze()
+function DocBuffer:freeze()
   if not self.is_frozen then
     self.is_frozen = true
     self.freeze_time = os.clock()
   end
 end
 
-function ExtBuffer:thaw()
+function DocBuffer:thaw()
   if self.is_frozen then
-    local copy = ExtBuffer.new()
+    local copy = DocBuffer.new()
     copy:insert(1, self, 1, #self)
     return copy
   else
@@ -132,20 +96,20 @@ function ExtBuffer:thaw()
   end
 end
 
-function ExtBuffer:load()
+function DocBuffer:load()
   self.buffer:load()
 end
 
-function ExtBuffer:has_healthy_mmap()
+function DocBuffer:has_healthy_mmap()
   return self.buffer:has_healthy_mmap()
 end
 
-function ExtBuffer:has_corrupt_mmap()
+function DocBuffer:has_corrupt_mmap()
   return self.buffer:has_corrupt_mmap()
 end
 
-function ExtBuffer.validate_mmaps()
+function DocBuffer.validate_mmaps()
   return Buffer.validate_mmaps()
 end
 
-return ExtBuffer
+return DocBuffer

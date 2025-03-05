@@ -339,7 +339,7 @@ const Node = struct {
     const data = self.frag.slice();
     if(offset < data.len) {
       const data_slice = data[offset .. @min(offset + dest.len - readc, data.len)];
-      std.mem.copyForwards(u8, dest[readc ..], data_slice);
+      @memcpy(dest[readc ..], data_slice);
       readc += data_slice.len;
       offset = 0;
     } else {
@@ -511,7 +511,10 @@ pub const Buffer = struct {
 
       if(node.right) |x| {
         result.descend(x);
-      } else break; // offset_ == self.len()
+      } else {
+        result.offset_in_node = std.math.maxInt(@TypeOf(result.offset_in_node));
+        break;
+      }
     }
 
     return result;
@@ -669,7 +672,8 @@ pub const Buffer = struct {
       const start = dest.items.len;
 
       var buf: [4]u8 = undefined;
-      try dest.appendSlice(buf[0 .. std.unicode.utf8Encode(try self.next_codepoint() orelse return null, &buf) catch unreachable]);
+      var last_codepoint = try self.next_codepoint() orelse return null;
+      try dest.appendSlice(buf[0 .. std.unicode.utf8Encode(last_codepoint, &buf) catch unreachable]);
       var last_advance = self.last_advance;
       defer self.last_advance = last_advance;
 
@@ -679,11 +683,12 @@ pub const Buffer = struct {
           self.rewind(self.last_advance) catch unreachable;
           break;
         } orelse break;
-        if(grapheme.grapheme_is_character_break(dest.getLast(), lookahead, &state)) {
+        if(grapheme.grapheme_is_character_break(last_codepoint, lookahead, &state)) {
           self.rewind(self.last_advance) catch unreachable;
           break;
         }
         try dest.appendSlice(buf[0 .. std.unicode.utf8Encode(lookahead, &buf) catch unreachable]);
+        last_codepoint = lookahead;
         last_advance += self.last_advance;
       }
 
