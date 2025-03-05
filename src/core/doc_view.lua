@@ -94,7 +94,6 @@ function DocView:draw_cut_off(x1, y1, x2, y2)
 
   self.doc.buffer:freeze()
   local nav = Navigator.of(self.doc.buffer)
-  nav:reset_profiling_data()
 
   for y = y1, y2 do
     local x = x1
@@ -131,19 +130,6 @@ function DocView:draw_cut_off(x1, y1, x2, y2)
 
     tty.write((' '):rep(x2 - x + 1))
   end
-
-  stderr.info(
-    here,
-    self.line, ':', self.col, '\t ',
-    'descents ', nav.local_cache.descents + nav.global_cache.descents, '\t',
-    'min_updates ', nav.local_cache.min_updates + nav.global_cache.min_updates, '\t',
-    'rotations ', nav.local_cache.rotations + nav.global_cache.rotations, '\t',
-    'time ', math.floor(1e6 * nav.time), 'µs\t ',
-    'descents ', nav.local_cache2.descents + nav.global_cache2.descents, '\t',
-    'min_updates ', nav.local_cache2.min_updates + nav.global_cache2.min_updates, '\t',
-    'splits ', nav.local_cache2.splits + nav.global_cache2.splits, '\t',
-    'time ', math.floor(1e6 * nav.time2), 'µs\t '
-  )
 end
 
 function DocView:next_grapheme(iter, loc, nav)

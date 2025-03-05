@@ -89,7 +89,7 @@ pub fn build(b: *std.Build) void {
       run = b.addSystemCommand(&.{"xfce4-terminal", "--hold", "-x"});
       run.addArtifactArg(exe);
     } else if(std.mem.eql(u8, term, "xterm")) {
-      run = b.addSystemCommand(&.{"xterm", "-hold", "-fullscreen", "-e"});
+      run = b.addSystemCommand(&.{"xterm", "-hold", "-e"});
       run.addArtifactArg(exe);
     } else {
       std.log.err("unknown terminal: {s}", .{term});

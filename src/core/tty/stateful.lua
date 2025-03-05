@@ -30,6 +30,7 @@ if core.platform == 'windows' then
 end
 
 -- HACK: filter CRs and DELs
+-- BUG: fix arrow key repeats in Kitty
 
 local tty = setmetatable({
   ansi_colors = {

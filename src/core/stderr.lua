@@ -17,7 +17,7 @@
 local stderr = {}
 
 function stderr.log(level, where, ...)
-  io.stderr:write(level, ' ', tostring(where), ': ')
+  io.stderr:write(os.date('%T'), ' ', level, ' ', tostring(where), ': ')
   local args = table.pack(...)
   for i = 1, args.n do
     io.stderr:write(tostring(args[i]))
