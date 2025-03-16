@@ -16,8 +16,8 @@
 
 local here = ...
 local stderr = require('core.stderr')
-local tty = require('core.tty')
-local utils = require('core.utils')
+local tty    = require('core.tty')
+local utils  = require('core.utils')
 
 local Navigator = {
   tab_width = 8,
@@ -25,6 +25,7 @@ local Navigator = {
   max_local_cache_size = 1e3,
   local_cache_prune_probability = 0.5,
 }
+Navigator.__index = Navigator
 
 function Navigator.of(buffer)
   if not buffer._navigator then
@@ -41,7 +42,7 @@ function Navigator.new(buffer)
     buffer = buffer,
     local_cache = Navigator.Cache.new(),
     global_cache = Navigator.Cache.new(),
-  }, { __index = Navigator })
+  }, Navigator)
   self.global_cache:insert({ byte = 1, line = 1, col = 1, last_tab = nil })
   return self
 end
@@ -121,19 +122,20 @@ end
 -- code. The one sure advantage of the splay, however, is the naturally arising
 -- LRU quality of its levels, which could be exploited in pruning.
 Navigator.Cache = {}
+Navigator.Cache.__index = Navigator.Cache
 
 function Navigator.Cache.new()
   return setmetatable({
     root = nil,
     size = 0,
-  }, { __index = Navigator.Cache })
+  }, Navigator.Cache)
 end
 
 function Navigator.Cache:insert(loc)
   local path = {}
   local node = self.root
   while node do
-    path[#path + 1] = node
+    table.insert(path, node)
     if loc.byte < node.value.byte then
       node = node.left
     elseif node.value.byte < loc.byte then
@@ -175,7 +177,7 @@ function Navigator.Cache:insert(loc)
   if node.left then
     node.min = utils.copy(node.left.min)
   else
-    path[#path + 1] = node
+    table.insert(path, node)
     for i = #path - 1, 1, -1 do
       if path[i].min.byte < path[i + 1].min.byte then break end
       path[i].min = utils.copy(path[i + 1].min)
@@ -209,17 +211,18 @@ function Navigator.Cache:prune(probability)
     dfs(node.left)
 
     if math.random() >= probability then
-      while #stack >= 2 and stack[#stack - 1].priority < node.priority do
-        stack[#stack - 1].right = table.remove(stack)
-      end
       if #stack > 0 and stack[#stack].priority < node.priority then
+        stack[#stack].right = nil
+        while #stack >= 2 and stack[#stack - 1].priority < node.priority do
+          stack[#stack - 1].right = table.remove(stack)
+        end
         node.left = table.remove(stack)
         node.min = utils.copy(node.left.min)
       else
         node.left = nil
         node.min = utils.copy(node.value)
       end
-      stack[#stack + 1] = node
+      table.insert(stack, node)
       self.size = self.size + 1
     end
 

@@ -14,20 +14,20 @@
 -- You should have received a copy of the GNU General Public License
 -- along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-local core = require('core')
+local core        = require('core')
 local InputParser = require('core.tty.input_parser')
 local unix
 if core.platform == 'linux' then
-  unix = require('core.tty.linux')
+  unix            = require('core.tty.linux')
 elseif core.platform == 'freebsd' then
-  unix = require('core.tty.freebsd')
+  unix            = require('core.tty.freebsd')
 end
-local system = require('core.tty.system')
-local utils = require('core.utils')
+local system      = require('core.tty.system')
 local windows
 if core.platform == 'windows' then
-  windows = require('core.tty.windows')
+  windows         = require('core.tty.windows')
 end
+local utils       = require('core.utils')
 
 -- HACK: filter CRs and DELs
 -- BUG: fix arrow key repeats in Kitty
@@ -281,7 +281,7 @@ function tty.detect_caps()
   local mouse_shape = tty.query('\27]22;?__current__\27\\', '\27]22:.*\27\\')
   -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Operating-System-Commands
   -- Konsole and st send BEL instead of ST at the end for some reason.
-  local window_background = tty.query('\27]11;?\27\\', '\27]11;.*\27?\\?\7?')
+  local window_background = tty.query('\27]11;?\27\\', '\27]11;.*\27?\\?\a?')
   tty.flush()
 
   -- VTE 0.35.1 (c5a32b49), Konsole 3.5.4 (f34d8203)
@@ -419,7 +419,7 @@ function tty.load_ansi_color_palette()
       -- our colors and it turns out that the former format (or in the words
       -- of X11 itself: "RGB Device") is actually deprecated by XParseColor!
       -- Source: man 3 XParseColor
-      '\27]4;' .. i - 1 .. ';rgb:(%x%x)%x*/(%x%x)%x*/(%x%x)%x*\27?\\?\7?'
+      '\27]4;' .. i - 1 .. ';rgb:(%x%x)%x*/(%x%x)%x*/(%x%x)%x*\27?\\?\a?'
     )
   end
   tty.flush()
@@ -443,7 +443,7 @@ function tty.read_events()
     tty.input_buf = ''
     if #events <= 0 then break end
     for _, event in ipairs(events) do
-      result[#result + 1] = event
+      table.insert(result, event)
     end
   end
   return result
@@ -451,7 +451,7 @@ end
 
 function tty.query(question, answer_regex)
   tty.write(question)
-  tty.query_clock = os.clock()
+  tty.query_clock = utils.timer()
 
   local answer = table.pack()
   return function()
@@ -465,8 +465,8 @@ function tty.query(question, answer_regex)
       local chunk = tty.read()
       if #chunk > 0 then
         tty.input_buf = tty.input_buf .. chunk
-        tty.query_clock = os.clock()
-      elseif os.clock() - tty.query_clock >= tty.timeout then
+        tty.query_clock = utils.timer()
+      elseif utils.timer() - tty.query_clock >= tty.timeout then
         answer[1] = true
         break
       end
@@ -536,50 +536,34 @@ function tty.load_functions()
   -- Terminals ignore unknown OSC sequences, so stubs for them improve
   -- performance only.
 
-  local ansi_color_fg_codes = {
-    black = 30,
-    red = 31,
-    green = 32,
-    yellow = 33,
-    blue = 34,
-    magenta = 35,
-    cyan = 36,
-    white = 37,
-    bright_black = 90,
-    bright_red = 91,
-    bright_green = 92,
-    bright_yellow = 93,
-    bright_blue = 94,
-    bright_magenta = 95,
-    bright_cyan = 96,
-    bright_white = 97,
-  }
+  local ansi_color_fg_codes = {}
+  for i, name in ipairs(tty.ansi_colors) do
+    ansi_color_fg_codes[name] = (name:match('^bright_') and 90 or 30) + (i - 1 & 7)
+  end
   if tty.cap.foreground == 'true_color' then
-    function tty.set_foreground(red, green, blue)
-      if blue then
+    function tty.set_foreground(color)
+      if ansi_color_fg_codes[color] then
+        tty.write('\27[', ansi_color_fg_codes[color], 'm')
+      elseif color then
         -- Reference: https://github.com/termstandard/colors
         -- According to the standards, the following syntax should use colons
         -- instead of semicolons but unfortunately the latter has become the
         -- predominant method due to misunderstandings and the passage of time.
         -- Further reading: https://chadaustin.me/2024/01/truecolor-terminal-emacs/
-        tty.write('\27[38;2;', red, ';', green, ';', blue, 'm')
-        tty.state.foreground = { red = red, green = green, blue = blue }
-      elseif red then
-        tty.write('\27[', ansi_color_fg_codes[red], 'm')
-        tty.state.foreground = red
+        tty.write('\27[38;2;', color.red, ';', color.green, ';', color.blue, 'm')
       else
         tty.write('\27[39m')
-        tty.state.foreground = nil
       end
+      tty.state.foreground = color
     end
   elseif tty.cap.foreground == 'ansi' then
-    function tty.set_foreground(red, green, blue)
-      if red and not blue then
+    function tty.set_foreground(color)
+      if ansi_color_fg_codes[color] then
         -- The \27[22m here is important because in the Linux console the codes
         -- for the non-bright colors do not reset the brightness turned on by
         -- the bright colors.
-        tty.write('\27[22;', ansi_color_fg_codes[red], 'm')
-        tty.state.foreground = red
+        tty.write('\27[22;', ansi_color_fg_codes[color], 'm')
+        tty.state.foreground = color
       else
         -- The above also applies to setting the default foreground color.
         tty.write('\27[22;39m')
@@ -590,45 +574,29 @@ function tty.load_functions()
     function tty.set_foreground() end
   end
 
-  local ansi_color_bg_codes = {
-    black = 40,
-    red = 41,
-    green = 42,
-    yellow = 43,
-    blue = 44,
-    magenta = 45,
-    cyan = 46,
-    white = 47,
-    bright_black = 100,
-    bright_red = 101,
-    bright_green = 102,
-    bright_yellow = 103,
-    bright_blue = 104,
-    bright_magenta = 105,
-    bright_cyan = 106,
-    bright_white = 107,
-  }
+  local ansi_color_bg_codes = {}
+  for k, v in pairs(ansi_color_fg_codes) do
+    ansi_color_bg_codes[k] = v + 10
+  end
   if tty.cap.background == 'true_color' then
-    function tty.set_background(red, green, blue)
-      if blue then
+    function tty.set_background(color)
+      if ansi_color_bg_codes[color] then
+        tty.write('\27[', ansi_color_bg_codes[color], 'm')
+      elseif color then
         -- Reference: https://github.com/termstandard/colors
         -- Same story with semicolons vs colons as before.
-        tty.write('\27[48;2;', red, ';', green, ';', blue, 'm')
-        tty.state.background = { red = red, green = green, blue = blue }
-      elseif red then
-        tty.write('\27[', ansi_color_bg_codes[red], 'm')
-        tty.state.background = red
+        tty.write('\27[48;2;', color.red, ';', color.green, ';', color.blue, 'm')
       else
         tty.write('\27[49m')
-        tty.state.background = nil
       end
+      tty.state.background = color
     end
   elseif tty.cap.background == 'ansi' then
-    function tty.set_background(red, green, blue)
-      if red and not blue then
+    function tty.set_background(color)
+      if ansi_color_bg_codes[color] then
         -- The bright colors don't work for the background in the Linux console.
-        tty.write('\27[', ansi_color_bg_codes[red], 'm')
-        tty.state.background = red
+        tty.write('\27[', ansi_color_bg_codes[color], 'm')
+        tty.state.background = color
       else
         tty.write('\27[49m')
         tty.state.background = nil
@@ -670,18 +638,18 @@ function tty.load_functions()
     function tty.set_italic() end
   end
 
+  local underline_shape_codes = {
+    straight = 1,
+    double = 2,
+    curly = 3,
+    dotted = 4,
+    dashed = 5,
+  }
   if tty.cap.underline then
     function tty.set_underline(is_enabled)
       -- Reference: https://sw.kovidgoyal.net/kitty/underlines/
       if is_enabled then
         if tty.state.underline_shape then
-          local underline_shape_codes = {
-            straight = 1,
-            double = 2,
-            curly = 3,
-            dotted = 4,
-            dashed = 5,
-          }
           tty.write('\27[4:', underline_shape_codes[tty.state.underline_shape], 'm')
         else
           tty.write('\27[4m')
@@ -698,25 +666,19 @@ function tty.load_functions()
   end
 
   if tty.cap.underline_color == 'true_color' then
-    function tty.set_underline_color(red, green, blue)
+    function tty.set_underline_color(color)
       -- Reference: https://sw.kovidgoyal.net/kitty/underlines/
-      if blue then
-        -- Same semicolon story as with foreground and background.
-        tty.write('\27[58;2;', red, ';', green, ';', blue, 'm')
-        tty.state.underline_color = { red = red, green = green, blue = blue }
-      elseif red then
+      if tty.ansi_color_palette[color] then
         -- Sadly, there appears to be no escape sequence for ANSI underline
         -- colors. We have to fetch the RGB value from the terminal.
-        tty.set_underline_color(
-          tty.ansi_color_palette[red].red,
-          tty.ansi_color_palette[red].green,
-          tty.ansi_color_palette[red].blue
-        )
-        tty.state.underline_color = red
+        tty.set_underline_color(tty.ansi_color_palette[color])
+      elseif color then
+        -- Same semicolon story as with foreground and background.
+        tty.write('\27[58;2;', color.red, ';', color.green, ';', color.blue, 'm')
       else
         tty.write('\27[59m')
-        tty.state.underline_color = nil
       end
+      tty.state.underline_color = color
     end
   else
     function tty.set_underline_color() end
@@ -764,7 +726,7 @@ function tty.load_functions()
     function tty.set_cursor(is_visible)
       -- There's no "reset cursor visibility to default" code, unless we query
       -- terminfo for "cnorm".
-      if is_visible == true or is_visible == nil then
+      if is_visible ~= false then
         tty.write('\27[?25h')
       else
         tty.write('\27[?25l')
@@ -837,27 +799,21 @@ function tty.load_functions()
   end
 
   if tty.cap.window_background then
-    function tty.set_window_background(red, green, blue)
+    function tty.set_window_background(color)
       -- Reference: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Operating-System-Commands
-      if blue then
+      if tty.ansi_color_palette[color] then
+        -- We have to fetch the ANSI color's RGB value from the terminal because
+        -- there's no other way.
+        tty.set_window_background(tty.ansi_color_palette[color])
+      elseif color then
         -- I don't know why, but this is ridiculously slow on kitty and st.
         -- Fun fact: xterm-compatibles accept X11 color names here, which you
         -- can find in /etc/X11/rgb.txt.
-        tty.write(string.format('\27]11;#%02x%02x%02x\27\\', red, green, blue))
-        tty.state.window_background = { red = red, green = green, blue = blue }
-      elseif red then
-        -- We have to fetch the ANSI color's RGB value from the terminal because
-        -- there's no other way.
-        tty.set_window_background(
-          tty.ansi_color_palette[red].red,
-          tty.ansi_color_palette[red].green,
-          tty.ansi_color_palette[red].blue
-        )
-        tty.state.window_background = red
+        tty.write(('\27]11;#%02x%02x%02x\27\\'):format(color.red, color.green, color.blue))
       else
         tty.write('\27]111;\27\\')
-        tty.state.window_background = nil
       end
+      tty.state.window_background = color
     end
   else
     function tty.set_window_background() end
@@ -877,8 +833,6 @@ function tty.load_functions()
         pipe:write(text or '')
         pipe:close()
       else
-        -- io.popen fails silently when the program errors out or isn't
-        -- available, so we just try all of them in sequence LOL.
         for _, cmd in ipairs({
           'xclip -selection clipboard',
           'xsel --clipboard',
@@ -886,7 +840,7 @@ function tty.load_functions()
         }) do
           pipe = io.popen(cmd, 'w')
           pipe:write(text or '')
-          pipe:close()
+          if pipe:close() then break end
         end
       end
     end

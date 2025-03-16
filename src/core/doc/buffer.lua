@@ -15,19 +15,17 @@
 -- along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 local Buffer = require('core.buffer')
+local utils  = require('core.utils')
 
 local DocBuffer = {}
+DocBuffer.__index = DocBuffer
 
 function DocBuffer.new()
   return setmetatable({
     buffer = Buffer.new(),
     is_frozen = false,
     freeze_time = nil,
-    loc_cache = DocBuffer.LocSet.new(),
-  }, {
-    __index = DocBuffer,
-    __len = DocBuffer.__len,
-  })
+  }, DocBuffer)
 end
 
 function DocBuffer.open(path)
@@ -35,11 +33,7 @@ function DocBuffer.open(path)
     buffer = Buffer.open(path),
     is_frozen = false,
     freeze_time = nil,
-    loc_cache = DocBuffer.LocSet.new(),
-  }, {
-    __index = DocBuffer,
-    __len = DocBuffer.__len,
-  })
+  }, DocBuffer)
 end
 
 function DocBuffer:save(path)
@@ -82,7 +76,7 @@ end
 function DocBuffer:freeze()
   if not self.is_frozen then
     self.is_frozen = true
-    self.freeze_time = os.clock()
+    self.freeze_time = utils.timer()
   end
 end
 

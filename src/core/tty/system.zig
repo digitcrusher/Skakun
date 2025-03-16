@@ -37,7 +37,7 @@ pub var file: if(builtin.os.tag == .windows) struct { in: File, out: File } else
 pub var reader: File.Reader = undefined;
 // The buffer should be big enough to hold the entire screen in order to prevent
 // flickering during redraws. The difference is especially noticeable in xterm.
-pub var writer: std.io.BufferedWriter(32768, File.Writer) = undefined;
+pub var writer: std.io.BufferedWriter(65536, File.Writer) = undefined;
 
 fn open(vm: *lua.Lua) i32  {
   if(is_open) vm.raiseErrorStr("tty is already open", .{});

@@ -14,14 +14,16 @@
 -- You should have received a copy of the GNU General Public License
 -- along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-local tty = require('core.tty')
+local tty   = require('core.tty')
+local utils = require('core.utils')
+local rgb = utils.rgb
 
 tty.clear()
 
 -- Everything
 tty.move_to(40, 10)
 tty.set_foreground('black')
-tty.set_background(255, 0, 191)
+tty.set_background(rgb'ff00bf')
 tty.set_bold(true)
 tty.set_italic(true)
 tty.set_underline(true)
@@ -35,9 +37,11 @@ tty.move_to(1, 1)
 
 -- True colors
 local function hue_color(hue)
-  return math.floor(255 * math.min(math.max(2 - 4 * hue, 0), 1)),
-         math.floor(255 * math.min(2 - math.abs(4 * hue - 2), 1)),
-         math.floor(255 * math.min(math.max(4 * hue - 2, 0), 1))
+  return {
+    red   = math.floor(255 * math.min(math.max(2 - 4 * hue, 0), 1)),
+    green = math.floor(255 * math.min(2 - math.abs(4 * hue - 2), 1)),
+    blue  = math.floor(255 * math.min(math.max(4 * hue - 2, 0), 1)),
+  }
 end
 local width = tty.getnum('cols')()
 for i = 1, width do
@@ -85,7 +89,7 @@ tty.set_underline(true)
 tty.write('un')
 tty.set_underline_color('magenta')
 tty.write('der')
-tty.set_underline_color(255, 0, 191)
+tty.set_underline_color(rgb'ff00bf')
 tty.write('line')
 tty.set_underline()
 tty.set_underline_color()
@@ -128,9 +132,9 @@ end
 
 -- True-color window background
 if tty.cap.window_background == 'true_color' then
-  local start = os.clock()
+  local start = utils.timer()
   while true do
-    local progress = (os.clock() - start) / 3
+    local progress = (utils.timer() - start) / 3
     if progress > 1 then break end
     tty.set_window_background(hue_color(progress))
     tty.flush()

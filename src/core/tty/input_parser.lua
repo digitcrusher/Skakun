@@ -264,6 +264,7 @@ local InputParser = {
     [57426] = 'kp_decimal',
   },
 }
+InputParser.__index = InputParser
 
 function InputParser.new()
   return setmetatable({
@@ -273,7 +274,7 @@ function InputParser.new()
 
     buf = '',
     is_pressed = {},
-  }, { __index = InputParser })
+  }, InputParser)
 end
 
 function InputParser:feed(string)
@@ -301,7 +302,7 @@ function InputParser:feed(string)
         self.is_pressed[event.button] = false
       end
 
-      result[#result + 1] = event
+      table.insert(result, event)
     end
   end
   self.buf = self.buf:sub(i)

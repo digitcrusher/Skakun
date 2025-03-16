@@ -14,19 +14,42 @@
 -- You should have received a copy of the GNU General Public License
 -- along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-local stderr = {}
+local stderr = {
+  time_color = '\27[90;2m',
+  level_colors = {
+    error = '\27[22;31;1m',
+    warn = '\27[22;33;1m',
+    info = '\27[22;34;1m',
+  },
+  place_color = '\27[39m',
+  text_color = '\27[0m',
+}
 
-function stderr.log(level, where, ...)
-  io.stderr:write(os.date('%T'), ' ', level, ' ', tostring(where), ': ')
+function stderr.color_log(level, place, ...)
+  stderr.print_indented(table.concat({
+    stderr.time_color, os.date('%T'), ' ',
+    stderr.level_colors[level], level, ' ',
+    stderr.place_color, tostring(place), ': ',
+    stderr.text_color,
+  }), ...)
+end
+function stderr.plain_log(level, place, ...)
+  stderr.print_indented(('%s %s %s: '):format(os.date('%T'), level, place), ...)
+end
+stderr.log = stderr.color_log
+
+function stderr.print_indented(indent, ...)
+  io.stderr:write(indent)
   local args = table.pack(...)
+  args[args.n] = tostring(args[args.n]):gsub('\n+$', '')
   for i = 1, args.n do
-    io.stderr:write(tostring(args[i]))
+    io.stderr:write((tostring(args[i]):gsub('\n', '\n' .. indent)))
   end
   io.stderr:write('\n')
 end
 
-function stderr.error(where, ...) stderr.log('error', where, ...) end
-function stderr.warn(where, ...) stderr.log('warn', where, ...) end
-function stderr.info(where, ...) stderr.log('info', where, ...) end
+function stderr.error(place, ...) stderr.log('error', place, ...) end
+function stderr.warn(place, ...) stderr.log('warn', place, ...) end
+function stderr.info(place, ...) stderr.log('info', place, ...) end
 
 return stderr

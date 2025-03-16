@@ -14,15 +14,16 @@
 -- You should have received a copy of the GNU General Public License
 -- along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-local utils = {}
+local lanes = require('lanes')
+
+local utils = {
+  timer = require('core.utils.timer'),
+}
 
 function utils.lock_globals()
   setmetatable(_G, {
     __newindex = function(table, key, value)
       error('will not create new global variable: ' .. key, 2)
-    end,
-    __index = function(table, key, value)
-      error('undefined variable: ' .. key, 2)
     end,
   })
 end
@@ -34,7 +35,7 @@ end
 function utils.hex_encode(string)
   local hex = ''
   for i = 1, #string do
-    hex = hex .. string.format('%02x', string:byte(i, i))
+    hex = hex .. ('%02x'):format(string:byte(i, i))
   end
   return hex
 end
@@ -113,29 +114,6 @@ function utils.rgb(string)
   }
 end
 
-function utils.unpack_color(color)
-  if type(color) == 'table' then
-    return color.red, color.green, color.blue
-  else
-    return color
-  end
-end
-
-local escapes = {
-  ['\\'] = [[\\]],
-  ['\''] = [[\']],
-  ['\a'] = [[\a]],
-  ['\b'] = [[\b]],
-  ['\f'] = [[\f]],
-  ['\n'] = [[\n]],
-  ['\r'] = [[\r]],
-  ['\t'] = [[\t]],
-  ['\v'] = [[\v]],
-  ['\127'] = [[\127]],
-}
-for i = 0, 31 do
-  escapes[string.char(i)] = escapes[string.char(i)] or ('\\' .. i)
-end
 function utils.tostring(value, visited)
   if type(value) == 'table' then
     visited = visited or {}
@@ -146,7 +124,7 @@ function utils.tostring(value, visited)
 
     local keys = {}
     for k in pairs(value) do
-      keys[#keys + 1] = k
+      table.insert(keys, k)
     end
     table.sort(keys)
 
@@ -161,7 +139,7 @@ function utils.tostring(value, visited)
     return result .. '}'
 
   elseif type(value) == 'string' then
-    return "'" .. value:gsub("[\\'%c]", escapes) .. "'"
+    return ('%q'):format(value)
   else
     return tostring(value)
   end
@@ -173,6 +151,29 @@ function utils.copy(table)
     result[k] = v
   end
   return result
+end
+
+function utils.split(string, sep)
+  local i = 1
+  return function()
+    if i > #string then return end
+    local j = string:find(sep, i) or #string + 1
+    local result = string:sub(i, j - 1)
+    i = j + 1
+    return result
+  end
+end
+
+function utils.slugify(string)
+  return string:gsub('[^%w.-]', '_')
+end
+
+function utils.start_lane(required, func, ...)
+  return lanes.gen('*', { required = required }, function(...)
+    return xpcall(func, function(err)
+      io.stderr:write(debug.traceback(err), '\n')
+    end, ...)
+  end)(...)
 end
 
 return utils

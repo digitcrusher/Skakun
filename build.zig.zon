@@ -2,19 +2,36 @@
   .name = .skakun,
   .version = "0.0.0",
   .dependencies = .{
+    .lanes = .{
+      .url = "https://github.com/digitcrusher/lanes/archive/e0236dc.tar.gz",
+      .hash = "N-V-__8AAI8sEgB0CYV0bfifFCKpr2AQQ6dqkqQ5hF8SbN8x",
+    },
     .libgrapheme = .{
       .url = "https://dl.suckless.org/libgrapheme/libgrapheme-2.0.2.tar.gz",
-      .hash = "122062e56c6886c7a680c70cd1c2ba1dff2f4282c0e448e05e2c19b51fff0986de97",
+      .hash = "N-V-__8AALJdVwBi5WxohsemgMcM0cK6Hf8vQoLA5EjgXiwZ",
+    },
+    .lua_cjson = .{
+      .url = "https://github.com/openresty/lua-cjson/archive/refs/tags/2.1.0.14.tar.gz",
+      .hash = "N-V-__8AADU5BQDb7c4jODJ3K0ddKULwMVI2cACwtGg-nBFd",
+    },
+    .lua_treesitter = .{
+      .url = "https://github.com/xcb-xwii/lua-tree-sitter/archive/refs/tags/v0.1.1.tar.gz",
+      .hash = "N-V-__8AAGZ0AQCa0H0e5h_qGFGLm4aHfe42Er00gGE9u7po",
+    },
+    .treesitter = .{
+      .url = "https://github.com/tree-sitter/tree-sitter/archive/1850762.tar.gz",
+      .hash = "tree_sitter-0.25.1-Tw2sRxO5CwBou3LAQAS0rtq7ovdnXcwy9gXTCIDKAfJG",
     },
     .ziglua = .{
       .url = "https://github.com/natecraddock/ziglua/archive/00a3c39.tar.gz",
-      .hash = "1220ee6d36df8c7847234ff5212eb7fc857d284b0d2eccb47cb9ba04ce089d4d1472",
+      .hash = "ziglua-0.1.0-AAAAAMDKBADubTbfjHhHI0_1IS63_IV9KEsNLsy0fLm6",
     },
   },
   .paths = .{
     "build.zig",
     "build.zig.zon",
     "doc",
+    "last-log.sh",
     "LICENSE",
     "README.md",
     "src",

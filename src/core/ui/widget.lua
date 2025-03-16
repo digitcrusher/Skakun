@@ -14,33 +14,29 @@
 -- You should have received a copy of the GNU General Public License
 -- along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-local DocBuffer = require('core.doc.buffer')
+local Widget = {}
+Widget.__index = Widget
 
-local Doc = {}
-Doc.__index = Doc
-
-function Doc.new()
+function Widget.new()
   return setmetatable({
-    buffer = DocBuffer.new(),
-    path = nil,
-  }, Doc)
+    parent = nil,
+    left = nil,
+    top = nil,
+    right = nil,
+    bottom = nil,
+  }, Widget)
 end
 
-function Doc.open(path)
-  return setmetatable({
-    buffer = DocBuffer.open(path),
-    path = path,
-  }, Doc)
+function Widget:compute_layout() end
+function Widget:draw() end
+function Widget:handle_event() end
+
+function Widget:width()
+  return self.right - self.left + 1
 end
 
-function Doc:save(path)
-  if path then
-    self.buffer:save(path)
-  elseif not self.path then
-    error('path not set')
-  else
-    self.buffer:save(self.path)
-  end
+function Widget:height()
+  return self.bottom - self.top + 1
 end
 
-return Doc
+return Widget

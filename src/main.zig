@@ -185,9 +185,6 @@ pub fn main() !void {
     \\  function()
     \\    local core = require('core')
     \\    core.cleanups = {}
-    \\    function core.add_cleanup(func)
-    \\      core.cleanups[#core.cleanups + 1] = func
-    \\    end
     \\    if core.platform == 'windows' then
     \\      -- %APPDATA% differs from %LOCALAPPDATA% in that it is synced
     \\      -- across devices.
@@ -205,7 +202,16 @@ pub fn main() !void {
     \\    package.path = core.config_dir .. '/?/init.lua;' .. package.path
     \\    package.path = core.config_dir .. '/?.lua;' .. package.path
     \\    package.cpath = core.config_dir .. '/?.so;' .. package.cpath
+    \\
+    \\    if core.platform == 'windows' then
+    \\      core.cache_dir = os.getenv('LOCALAPPDATA') .. '\\Skakun\\Cache'
+    \\    elseif core.platform == 'macos' then
+    \\      core.cache_dir = os.getenv('HOME') .. '/Library/Caches/Skakun'
+    \\    else
+    \\      core.cache_dir = (os.getenv('XDG_CACHE_HOME') or os.getenv('HOME') .. '/.cache') .. '/skakun'
+    \\    end
     \\  end,
+    \\
     \\  function(err)
     \\    -- The depth has to be 1 here for some reason.
     \\    io.stderr:write(debug.traceback(err), '\n')

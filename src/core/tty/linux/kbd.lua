@@ -26,6 +26,7 @@ local K, KG, KT = system.K, system.KG, system.KT
 local Kbd = {
   keycodes = system.keycodes,
 }
+Kbd.__index = Kbd
 
 function Kbd.new()
   return setmetatable({
@@ -46,7 +47,7 @@ function Kbd.new()
     is_next_key_accent = false,
 
     active_codepoint = nil,
-  }, { __index = Kbd })
+  }, Kbd)
 end
 
 function Kbd:feed(string)
@@ -77,7 +78,7 @@ function Kbd:feed(string)
     self.is_pressed[keycode] = not is_release
 
     if event.button then
-      result[#result + 1] = event
+      table.insert(result, event)
     else
       stderr.warn(here, 'unknown keycode: ', keycode)
     end

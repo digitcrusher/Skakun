@@ -1,21 +1,68 @@
 local here = ...
-local core = require('core')
-local Doc = require('core.doc')
-local DocView = require('core.doc_view')
-local stderr = require('core.stderr')
-local tty = require('core.tty')
-local utils = require('core.utils')
+local lanes      = require('lanes').configure()
+local core       = require('core')
+local Doc        = require('core.doc')
+local stderr     = require('core.stderr')
+local treesitter = require('core.treesitter')
+local tty        = require('core.tty')
+local DocView    = require('core.ui.doc_view')
+local utils      = require('core.utils')
 local rgb = utils.rgb
 
 -- core.should_forward_stderr_on_exit = false
 utils.lock_globals()
-core.add_cleanup(tty.restore)
+treesitter.start_pkg_loader()
+table.insert(core.cleanups, tty.stop_pkg_loader)
+table.insert(core.cleanups, tty.restore)
 tty.setup()
 
-local view = DocView.new(Doc.open(core.args[2]))
+local grammar
+while not grammar do
+  for _, i in ipairs(treesitter.grammars()) do
+    if i.file_suffixes then
+      for _, suffix in ipairs(i.file_suffixes) do
+        if core.args[2]:sub(-#suffix) == suffix then
+          grammar = i
+          break
+        end
+      end
+      if grammar then break end
+    end
+  end
+  lanes.sleep(0.1)
+end
+local parser = treesitter.Parser.new()
+parser:set_language(grammar.lang)
+local src = io.open(core.args[2], 'r'):read('a')
+local tree = parser:parse(nil, function(from)
+  return src:sub(from + 1)
+end)
+local runner = treesitter.Query.Runner.new({
+  ['eq?'] = function(capture, string)
+    local node = capture:one_node()
+    return src:sub(node:start_byte() + 1, node:end_byte()) == string
+  end,
+  ['match?'] = function(capture, regex)
+    local node = capture:one_node()
+    stderr.info(here, src:sub(node:start_byte() + 1, node:end_byte()), ' ', regex)
+    return src:sub(node:start_byte() + 1, node:end_byte()):match(regex)
+  end,
+})
+local cursor = treesitter.Query.Cursor.new(grammar.highlights, tree:root_node())
+stderr.info(here, 'witamy ', tree:root_node())
+for i in runner:iter_captures(cursor) do
+  local a = i:node():start_byte() + 1
+  local b = i:node():end_byte()
+  stderr.info(here, i:name(), ' ', a, ' ', b, ' \t', src:sub(a, b))
+end
+stderr.info(here, 'żegnamy')
+
+--[[
+local root = DocView.new(Doc.open(core.args[2]))
 
 DocView.foreground = rgb'000000'
 DocView.background = rgb'ffffff'
+DocView.error_color = rgb'ff0000'
 
 local old_width, old_height
 while true do
@@ -24,47 +71,36 @@ while true do
   old_width = width
   old_height = height
 
+  local margin = 1
+  root.left = 1 + 2 * margin
+  root.right = width - 2 * margin
+  root.top = 1 + margin
+  root.bottom = height - margin
+
   for _, event in ipairs(tty.read_events()) do
     if event.type == 'press' or event.type == 'repeat' then
       if event.button == 'escape' then
         os.exit(0)
-      elseif event.button == 'up' then
-        view.line = math.max(view.line - 1, 1)
-      elseif event.button == 'scroll_up' then
-        view.line = math.max(view.line - 3, 1)
-      elseif event.button == 'page_up' then
-        view.line = math.max(view.line - height, 1)
-      elseif event.button == 'left' then
-        view.col = math.max(view.col - 1, 1)
-      elseif event.button == 'down' then
-        view.line = view.line + 1
-      elseif event.button == 'scroll_down' then
-        view.line = view.line + 3
-      elseif event.button == 'page_down' then
-        view.line = view.line + height
-      elseif event.button == 'right' then
-        view.col = view.col + 1
-      elseif event.button == 'w' then
-        view.should_soft_wrap = not view.should_soft_wrap
       end
       should_redraw = true
     end
+    root:handle_event(event)
   end
 
   if should_redraw then
-    local start = os.clock()
+    local start = utils.timer()
 
     tty.sync_begin()
     tty.set_background()
     tty.clear()
 
-    local margin = 1
-    view:draw(1 + 2 * margin, 1 + margin, width - 2 * margin, height - margin)
+    root:draw()
     tty.set_cursor(false)
 
     tty.sync_end()
     tty.flush()
 
-    stderr.info(here, 'redraw done in ', math.floor(1e6 * (os.clock() - start)), 'µs')
+    stderr.info(here, 'redraw done in ', math.floor(1e6 * (utils.timer() - start)), 'µs')
   end
 end
+--]]
